@@ -41,6 +41,10 @@ Python 3.11+; no third-party dependencies are needed for the core tests.
 python -m unittest discover -s tests -v
 ```
 
+The capture, dataset-preparation, and training workflow is documented in
+[`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md). No model is trained or
+bundled yet; platform-specific permissioned frames are a required input.
+
 Optional development extras:
 
 ```powershell
@@ -86,6 +90,7 @@ See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the full findings and source link
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — UML/component/sequence/state diagrams
 - [`docs/DATASET_AND_EVALUATION.md`](docs/DATASET_AND_EVALUATION.md) — labelling and evaluation plan
 - [`docs/RESEARCH.md`](docs/RESEARCH.md) — GitHub/model research and licensing notes
+- [`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md) — capture, annotation, session split, and training workflow
 
 ## Roadmap
 

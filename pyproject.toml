@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stream-signal-vision"
-version = "0.1.0"
+version = "0.2.0"
 description = "A modular research prototype for detecting trade events in livestream trading UIs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = []
 capture = ["mss>=9.0", "opencv-python>=4.10"]
 ocr = ["paddleocr>=3.0"]
 stream = ["streamlink>=7.0"]
+train-yolo = ["ultralytics>=8.4"]
 test = []
 
 [tool.setuptools.packages.find]

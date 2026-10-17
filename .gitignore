@@ -11,7 +11,9 @@ htmlcov/
 captures/
 data/raw/
 data/private/
+data/derived/
 datasets/private/
+datasets/derived/
 models/weights/
 *.pt
 *.onnx
