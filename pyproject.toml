@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stream-signal-vision"
+version = "0.1.0"
+description = "A modular research prototype for detecting trade events in livestream trading UIs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "All rights reserved - portfolio prototype; no licence granted yet." }
+authors = [{ name = "David Buchan" }]
+dependencies = []
+
+[project.optional-dependencies]
+capture = ["mss>=9.0", "opencv-python>=4.10"]
+ocr = ["paddleocr>=3.0"]
+stream = ["streamlink>=7.0"]
+test = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
