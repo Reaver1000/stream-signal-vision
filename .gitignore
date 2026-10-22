@@ -13,6 +13,9 @@ captures/
 data/raw/
 data/private/
 data/derived/
+data/webhook_routes.json
+data/platform_templates/
+data/review/
 datasets/private/
 datasets/derived/
 models/weights/
@@ -25,3 +28,4 @@ outputs/
 .DS_Store
 Thumbs.db
 desktop.ini
+gui_settings.local.json

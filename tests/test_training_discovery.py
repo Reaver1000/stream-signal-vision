@@ -1,0 +1,72 @@
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+from train_channel import discover_channel_vods, seed_pooled_state_intervals
+import gui_app
+from train_streams_batch import is_completed_vod, next_unseen_batch
+
+
+class TrainingDiscoveryTests(unittest.TestCase):
+    def test_full_page_discovery_omits_playlist_end(self):
+        output = "\n".join(
+            json.dumps({"id": f"vid-{i}", "url": f"https://www.youtube.com/watch?v=vid-{i}", "title": f"VOD {i}"})
+            for i in range(2)
+        )
+        with patch("train_channel.run_cmd") as run_cmd:
+            run_cmd.return_value.stdout = output
+            vods = discover_channel_vods("https://www.youtube.com/@example/streams", max_vods=None)
+        command = run_cmd.call_args.args[0]
+        self.assertNotIn("--playlist-end", command)
+        self.assertEqual([v["vod_id"] for v in vods], ["vid-0", "vid-1"])
+
+    def test_paged_discovery_uses_inclusive_five_item_range(self):
+        with patch("train_channel.run_cmd") as run_cmd:
+            run_cmd.return_value.stdout = ""
+            discover_channel_vods("https://www.youtube.com/@example/streams", max_vods=5, playlist_start=6)
+        command = run_cmd.call_args.args[0]
+        self.assertEqual(command[command.index("--playlist-start") + 1], "6")
+        self.assertEqual(command[command.index("--playlist-end") + 1], "10")
+
+    def test_session_local_intervals_seed_pooled_file_without_duplicates(self):
+        row = {
+            "source_id": "session-1",
+            "start": "00:01:00",
+            "end": "00:01:20",
+            "trade_state": "open",
+            "split": "train",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            local = root / "session-1" / "state_intervals.jsonl"
+            local.parent.mkdir()
+            local.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            pooled = root / "state_intervals.jsonl"
+            rows = seed_pooled_state_intervals(root, pooled)
+            self.assertEqual(rows, [row])
+            self.assertEqual(seed_pooled_state_intervals(root, pooled), [row])
+
+    def test_batch_excludes_live_and_upcoming_entries(self):
+        self.assertTrue(gui_app.is_completed_vod({"live_status": "was_live", "duration": 100}))
+        self.assertFalse(gui_app.is_completed_vod({"live_status": "is_live", "is_live": True}))
+        self.assertFalse(gui_app.is_completed_vod({"live_status": "is_upcoming", "duration": None}))
+        self.assertEqual(gui_app.BatchTab.BATCH_SIZE, 5)
+
+    def test_batch_picker_skips_seen_and_non_vod_entries(self):
+        vods = [
+            {"vod_id": "live1", "live_status": "is_live", "is_live": True},
+            {"vod_id": "seen1", "live_status": "was_live", "duration": 20},
+            {"vod_id": "new1", "live_status": "was_live", "duration": 30},
+            {"vod_id": "new2", "live_status": "was_live", "duration": 40},
+        ]
+        chosen = next_unseen_batch(vods, {"SEEN1"}, 5)
+        self.assertEqual([v["vod_id"] for v in chosen], ["new1", "new2"])
+
+
+if __name__ == "__main__":
+    unittest.main()

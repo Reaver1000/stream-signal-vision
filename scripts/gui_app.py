@@ -33,7 +33,7 @@ SETTINGS_PATH = REPO_ROOT / "gui_settings.local.json"
 STREAMER_PRESETS = {
     "nso": {"platform": "topstepx", "roi": "0.0,0.08,0.78,0.82"},
     "keyflow": {"platform": "tradingview", "roi": "0.02,0.11,0.69,0.87"},
-    "rips": {"platform": "tradingview", "roi": "0.02,0.11,0.69,0.87"},
+    "rips": {"platform": "tradingview", "roi": "0.0,0.0,1.0,1.0"},
 }
 PLATFORMS = ("tradingview", "topstepx", "tradovate", "wealthcharts", "mt5")
 DEVICES = ("cpu", "0", "cuda:0")
@@ -49,6 +49,13 @@ _WEBHOOK_RE = re.compile(r"webhooks/\S+")
 
 def is_channel_url(url: str) -> bool:
     return bool(url.strip()) and bool(_CHANNEL_URL_RE.search(url.strip()))
+
+
+def is_completed_vod(vod: dict[str, object]) -> bool:
+    status = str(vod.get("live_status") or "").lower()
+    if vod.get("is_live") or status in {"is_live", "is_upcoming", "is_upcoming_live"}:
+        return False
+    return vod.get("duration") is not None or status == "was_live"
 
 
 def mask_secrets(line: str) -> str:
@@ -668,32 +675,35 @@ class VodTab(BaseTab):
 
 
 class BatchTab(BaseTab):
-    _MAX_CHANNEL_PASSES = 200
+    BATCH_SIZE = 5
 
     def __init__(self, master, app, process_lock: threading.Lock):
         super().__init__(master, app, "Batch")
         self.lock = process_lock
         self.runner = CommandRunner(self.log.append)
         self._cancel = False
+        self._batch_active = False
         self._progress = ""
-        self.add_entry(
-            "Channel/streams page URL (processes every unseen VOD)",
-            "batch.channel",
+        self.channel_url = self.add_entry(
+            "YouTube channel Streams tab URL", "batch.channel"
         )
-        self.max_vods = self.add_entry("Max VODs per discovery", "batch.max_vods", "10", width=10)
-        row = self._next_row()
-        ttk.Label(self, text="URLs (one per line)").grid(row=row, column=0, sticky="nw", padx=(0, 8))
-        self.urls_text = scrolledtext.ScrolledText(self, height=6, font=("Consolas", 9), wrap=tk.WORD)
-        self.urls_text.grid(row=row, column=1, sticky="we", pady=2)
-        self.app.bind_var("batch.urls", _TextVar(self.urls_text))
-        self.urls_text.bind("<<Modified>>", lambda e: self.app._persist_later())
         self.streamer = self.add_combo("Streamer", "batch.streamer", sorted(STREAMER_PRESETS), "nso")
         self.platform = self.add_combo("Platform", "batch.platform", PLATFORMS, "topstepx")
-        self.mode = self.add_combo("Mode", "batch.mode", ("ingest", "loop"), "ingest")
+        self.mode = self.add_combo("Mode", "batch.mode", ("loop", "ingest"), "loop")
         self.roi = self.add_entry("Chart ROI x,y,w,h", "batch.roi", STREAMER_PRESETS["nso"]["roi"])
+        self.model_var = self.add_combo("Starting classifier checkpoint", "batch.model", [])
+        ttk.Button(self, text="Refresh models", command=self.refresh_models).grid(
+            row=self._row - 1, column=2, sticky="w", padx=(6, 0), pady=2
+        )
         self.data_root = self.add_entry(
             "Private data root", "batch.data_root", str(default_data_root()), browse="dir"
         )
+        self.model_map: dict[str, Path] = {}
+        ttk.Label(
+            self,
+            text="Processes every unseen VOD sequentially; logs are grouped in sets of five. Metadata discovery only; no full-playlist video download.",
+            wraplength=760,
+        ).grid(row=self._next_row(), column=0, columnspan=3, sticky="w", pady=(3, 4))
         self.cleanup_media = self.add_check(
             "Delete downloaded VOD video after extraction (recommended)", "batch.cleanup_media", True
         )
@@ -709,7 +719,19 @@ class BatchTab(BaseTab):
         self.progress_lbl.pack(side=tk.LEFT, padx=(12, 0))
         self.attach_log(rows=12)
         self.streamer.trace_add("write", lambda *_: self.apply_preset())
+        self.refresh_models()
         self.after(300, self._sync)
+
+    def refresh_models(self) -> None:
+        models = find_models()
+        self.model_map = {model_label(m): m for m in models}
+        combo = self._model_combo()
+        combo["values"] = list(self.model_map)
+        current = self.model_var.get()
+        if current not in self.model_map:
+            preferred = preferred_model(models)
+            if preferred:
+                self.model_var.set(preferred)
 
     def apply_preset(self) -> None:
         name = self.streamer.get().strip().lower()
@@ -719,14 +741,17 @@ class BatchTab(BaseTab):
             self.roi.set(preset["roi"])
 
     def on_start(self) -> None:
-        plan = plan_batch(self.urls_text.get("1.0", "end-1c"), self.app.get("batch.channel", self))
-        if not plan:
+        channel_url = self.channel_url.get().strip()
+        if not is_channel_url(channel_url):
             messagebox.showerror(
-                "Missing input", "Provide a channel page URL and/or a list of VOD URLs."
+                "Missing input", "Paste the YouTube channel's Streams tab URL."
             )
             return
         if not self.streamer.get().strip():
             messagebox.showerror("Missing input", "Streamer is required.")
+            return
+        if self.mode.get() == "loop" and not self.model_map.get(self.model_var.get()):
+            messagebox.showerror("Missing model", "Pick a classifier checkpoint or Refresh models.")
             return
         if not self.lock.acquire(blocking=False):
             messagebox.showerror(
@@ -734,41 +759,99 @@ class BatchTab(BaseTab):
             )
             return
         self._cancel = False
-        threading.Thread(target=self._worker, args=(plan,), daemon=True).start()
+        self._batch_active = True
+        options = {
+            "channel_url": channel_url,
+            "streamer": self.streamer.get().strip(),
+            "platform": self.platform.get(),
+            "mode": self.mode.get(),
+            "roi": self.roi.get().strip(),
+            "data_root": self.data_root.get().strip(),
+            "model": str(self.model_map.get(self.model_var.get(), "")),
+            "cleanup_media": self.cleanup_media.get(),
+            "train_detector": self.train_detector.get(),
+            "dry_run": self.dry_run.get(),
+        }
+        threading.Thread(target=self._worker, args=(options,), daemon=True).start()
 
     def on_stop(self) -> None:
         self._cancel = True
         self.runner.stop()
 
-    def _worker(self, plan: list[tuple[str, str]]) -> None:
+    def _worker(self, options: dict[str, object]) -> None:
         try:
-            for idx, (kind, url) in enumerate(plan, 1):
+            from train_channel import discover_channel_vods, load_ledger
+
+            channel_url = str(options["channel_url"])
+            data_root = Path(str(options["data_root"]))
+            ledger = load_ledger(data_root / "channel_ledger.json")
+            streamer = str(options["streamer"]).lower()
+            seen = {str(v).lower() for v in ledger.get("vods_by_streamer", {}).get(streamer, [])}
+            self.log.append("[batch] discovering the Streams page (metadata only)...")
+            vods = discover_channel_vods(channel_url, max_vods=None)
+            completed = [v for v in vods if is_completed_vod(v)]
+            deferred = len(vods) - len(completed)
+            self.log.append(
+                f"[batch] discovered {len(vods)} entries: {len(completed)} completed VOD(s), "
+                f"{deferred} live/upcoming/undated; {len(seen)} already in the ledger"
+            )
+            unseen = [v for v in completed if str(v["vod_id"]).lower() not in seen]
+            self.log.append(f"[batch] {len(unseen)} unseen video(s) queued")
+            if bool(options["dry_run"]):
+                for i, vod in enumerate(unseen, 1):
+                    self.log.append(f"[dry-run {i}] {vod['url']} | {vod['title']}")
+                self._progress = f"[dry-run] listed {len(unseen)} unseen video(s)"
+                return
+            for batch_start in range(0, len(unseen), self.BATCH_SIZE):
                 if self._cancel:
                     break
-                self._progress = f"[{idx}/{len(plan)}] {url}"
-                self.log.append(self._progress)
-                if kind == "vod":
-                    self._run_one(channel="", url=url)
-                else:
-                    self._drain_channel(url)
+                group = unseen[batch_start:batch_start + self.BATCH_SIZE]
+                batch_no = batch_start // self.BATCH_SIZE + 1
+                self.log.append(f"[batch {batch_no}] starting {len(group)} video(s)")
+                for video_idx, vod in enumerate(group, 1):
+                    if self._cancel:
+                        break
+                    self._progress = f"Batch {batch_no}: {video_idx}/{len(group)} — {vod['title']}"
+                    self.log.append(f"[batch {batch_no} {video_idx}/{len(group)}] {vod['url']} | {vod['title']}")
+                    rc, lines = self._run_one(options, str(vod["url"]))
+                    if rc != 0:
+                        self.log.append(f"[batch] stopping after failure on {vod['vod_id']} (exit {rc})")
+                        self._cancel = True
+                        break
+                    if str(options["mode"]) == "loop":
+                        for line in lines:
+                            match = re.search(r"best checkpoint:\s*(.+?)\s*$", line, re.IGNORECASE)
+                            if match:
+                                candidate = Path(match.group(1).strip().strip('"'))
+                                if not candidate.is_absolute():
+                                    candidate = REPO_ROOT / candidate
+                                if candidate.is_file():
+                                    options["model"] = str(candidate)
+                                    self.log.append(f"[batch] next fine-tune starts from {candidate}")
+                                    break
+                    ledger = load_ledger(data_root / "channel_ledger.json")
+                    seen = {str(v).lower() for v in ledger.get("vods_by_streamer", {}).get(streamer, [])}
+                self.log.append(f"[batch {batch_no}] {'cancelled' if self._cancel else 'finished'}")
             self._progress = "[batch] cancelled" if self._cancel else "[batch] done"
             self.log.append(self._progress)
+        except Exception as exc:
+            self._progress = "[batch] failed"
+            self.log.append(f"[batch] error: {type(exc).__name__}: {exc}")
         finally:
+            self._batch_active = False
             self.lock.release()
 
-    def _run_one(self, *, channel: str, url: str) -> tuple[int, list[str]]:
+    def _run_one(self, options: dict[str, object], url: str) -> tuple[int, list[str]]:
         argv = build_train_command(
-            streamer=self.streamer.get().strip(),
-            platform=self.platform.get(),
-            mode=self.mode.get(),
+            streamer=str(options["streamer"]),
+            platform=str(options["platform"]),
+            mode=str(options["mode"]),
             url=url,
-            channel=channel,
-            roi=self.roi.get().strip(),
-            data_root=self.data_root.get().strip(),
-            max_vods=self.max_vods.get().strip(),
-            train_detector=self.train_detector.get(),
-            cleanup_media=self.cleanup_media.get(),
-            dry_run=self.dry_run.get(),
+            roi=str(options["roi"]),
+            data_root=str(options["data_root"]),
+            model=str(options["model"]),
+            train_detector=bool(options["train_detector"]),
+            cleanup_media=bool(options["cleanup_media"]),
         )
         done = threading.Event()
         holder: dict[str, tuple[int, list[str]]] = {}
@@ -783,21 +866,8 @@ class BatchTab(BaseTab):
         done.wait()
         return holder["result"]
 
-    def _drain_channel(self, url: str) -> None:
-        if self.dry_run.get():
-            self._run_one(channel=url, url="")
-            return
-        for _ in range(self._MAX_CHANNEL_PASSES):
-            if self._cancel:
-                return
-            rc, lines = self._run_one(channel=url, url="")
-            if rc != 0:
-                return
-            if any("already been processed" in ln for ln in lines):
-                return
-
     def _sync(self) -> None:
-        running = self.runner.is_running()
+        running = self._batch_active or self.runner.is_running()
         self.start_btn.configure(state=tk.DISABLED if running else tk.NORMAL)
         self.stop_btn.configure(state=tk.NORMAL if running else tk.DISABLED)
         if self._progress and self.progress_lbl.cget("text") != self._progress:

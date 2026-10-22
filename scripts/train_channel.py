@@ -89,6 +89,25 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text((content + "\n") if content else "", encoding="utf-8")
 
 
+def seed_pooled_state_intervals(data_root: Path, pooled_path: Path) -> list[dict[str, Any]]:
+    """Merge session-local reviewed intervals into the pooled private interval file."""
+    rows = read_jsonl(pooled_path)
+    known = {
+        (r.get("source_id"), r.get("start"), r.get("end"), r.get("trade_state"), r.get("split"))
+        for r in rows
+    }
+    for source_path in sorted(data_root.rglob("state_intervals.jsonl")):
+        if source_path.resolve() == pooled_path.resolve():
+            continue
+        for row in read_jsonl(source_path):
+            key = (row.get("source_id"), row.get("start"), row.get("end"), row.get("trade_state"), row.get("split"))
+            if key not in known:
+                rows.append(row)
+                known.add(key)
+    write_jsonl(pooled_path, rows)
+    return rows
+
+
 def _write_stream(text: str, stream) -> None:
     """Write text to a stream without crashing on cp1252 consoles (Ultralytics UTF-8 bars)."""
     try:
@@ -158,18 +177,20 @@ def save_ledger(ledger_path: Path, ledger: dict[str, Any]) -> None:
     ledger_path.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def discover_channel_vods(channel_url: str, max_vods: int = 10) -> list[dict[str, Any]]:
-    """Fetch recent back-catalogue VOD metadata from a streamer channel URL via yt-dlp."""
+def discover_channel_vods(channel_url: str, max_vods: int | None = 10, playlist_start: int = 1) -> list[dict[str, Any]]:
+    """Fetch VOD metadata from a channel page; omit max_vods to list the full page."""
     cmd = [
         sys.executable,
         "-m",
         "yt_dlp",
         "--flat-playlist",
         "--dump-json",
-        "--playlist-end",
-        str(max_vods),
-        channel_url,
     ]
+    if playlist_start > 1:
+        cmd.extend(["--playlist-start", str(playlist_start)])
+    if max_vods is not None:
+        cmd.extend(["--playlist-end", str(playlist_start + max_vods - 1)])
+    cmd.append(channel_url)
     result = run_cmd(cmd, check=True, echo_stdout=False)
     vods: list[dict[str, Any]] = []
     for line in result.stdout.splitlines():
@@ -190,6 +211,8 @@ def discover_channel_vods(channel_url: str, max_vods: int = 10) -> list[dict[str
                     "url": str(url),
                     "title": item.get("title") or "",
                     "duration": item.get("duration"),
+                    "live_status": item.get("live_status"),
+                    "is_live": bool(item.get("is_live")),
                 }
             )
     return vods
@@ -738,7 +761,7 @@ def main() -> int:
 
     # Train / Loop mode: update state_intervals.jsonl if needed and run prepare + train + evaluate
     intervals_path = args.intervals or (args.data_root / "state_intervals.jsonl")
-    existing_intervals = read_jsonl(intervals_path)
+    existing_intervals = seed_pooled_state_intervals(args.data_root, intervals_path)
     derived = derive_state_intervals_from_annotations(
         read_jsonl(artifacts["annotations"]),
         read_jsonl(artifacts["manifest"]),
