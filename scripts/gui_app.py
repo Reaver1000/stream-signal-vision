@@ -781,6 +781,12 @@ class BatchTab(BaseTab):
     def _worker(self, options: dict[str, object]) -> None:
         try:
             from train_channel import discover_channel_vods, load_ledger
+            from train_streams_batch import (
+                candidate_is_not_worse,
+                defer_vod,
+                evaluate_external,
+                load_deferred_ids,
+            )
 
             channel_url = str(options["channel_url"])
             data_root = Path(str(options["data_root"]))
@@ -796,6 +802,8 @@ class BatchTab(BaseTab):
                 f"{deferred} live/upcoming/undated; {len(seen)} already in the ledger"
             )
             unseen = [v for v in completed if str(v["vod_id"]).lower() not in seen]
+            deferred_ids = load_deferred_ids(data_root, streamer)
+            unseen = [v for v in unseen if str(v["vod_id"]).lower() not in deferred_ids]
             self.log.append(f"[batch] {len(unseen)} unseen video(s) queued")
             if bool(options["dry_run"]):
                 for i, vod in enumerate(unseen, 1):
@@ -815,10 +823,18 @@ class BatchTab(BaseTab):
                     self.log.append(f"[batch {batch_no} {video_idx}/{len(group)}] {vod['url']} | {vod['title']}")
                     rc, lines = self._run_one(options, str(vod["url"]))
                     if rc != 0:
-                        self.log.append(f"[batch] stopping after failure on {vod['vod_id']} (exit {rc})")
-                        self._cancel = True
-                        break
+                        defer_vod(
+                            data_root,
+                            streamer,
+                            str(vod["vod_id"]),
+                            f"train_channel exit {rc}",
+                        )
+                        self.log.append(
+                            f"[batch] deferred {vod['vod_id']} for 24 hours after exit {rc}; continuing"
+                        )
+                        continue
                     if str(options["mode"]) == "loop":
+                        candidate_path = None
                         for line in lines:
                             match = re.search(r"best checkpoint:\s*(.+?)\s*$", line, re.IGNORECASE)
                             if match:
@@ -826,9 +842,20 @@ class BatchTab(BaseTab):
                                 if not candidate.is_absolute():
                                     candidate = REPO_ROOT / candidate
                                 if candidate.is_file():
-                                    options["model"] = str(candidate)
-                                    self.log.append(f"[batch] next fine-tune starts from {candidate}")
+                                    candidate_path = candidate
                                     break
+                        previous_model = str(options["model"])
+                        if candidate_path and previous_model:
+                            dataset = REPO_ROOT / "data" / "derived" / "state-prototype"
+                            baseline = evaluate_external(previous_model, dataset, self.log.append)
+                            candidate_metrics = evaluate_external(str(candidate_path), dataset, self.log.append)
+                            if baseline and candidate_metrics and candidate_is_not_worse(candidate_metrics, baseline):
+                                options["model"] = str(candidate_path)
+                                self.log.append(f"[batch] accepted non-regressing checkpoint: {candidate_path}")
+                            else:
+                                self.log.append(
+                                    f"[batch] kept prior checkpoint; candidate failed external holdout gate: {candidate_path}"
+                                )
                     ledger = load_ledger(data_root / "channel_ledger.json")
                     seen = {str(v).lower() for v in ledger.get("vods_by_streamer", {}).get(streamer, [])}
                 self.log.append(f"[batch {batch_no}] {'cancelled' if self._cancel else 'finished'}")

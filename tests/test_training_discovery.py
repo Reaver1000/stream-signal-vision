@@ -9,7 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from train_channel import discover_channel_vods, seed_pooled_state_intervals
 import gui_app
-from train_streams_batch import is_completed_vod, next_unseen_batch
+from train_streams_batch import (
+    candidate_is_not_worse,
+    defer_vod,
+    is_completed_vod,
+    load_deferred_ids,
+    next_unseen_batch,
+    parse_external_confusion,
+)
 from label_cue_windows import allocate_window_limits
 from vlm_label import sample_evenly
 
@@ -74,6 +81,31 @@ class TrainingDiscoveryTests(unittest.TestCase):
         self.assertEqual(sum(limit for _, limit in allocations), 120)
         self.assertEqual(len(allocations), 49)
         self.assertEqual(sample_evenly(list(range(10)), 4), [0, 3, 6, 9])
+
+    def test_checkpoint_gate_rejects_external_regressions(self):
+        baseline = parse_external_confusion(
+            "confusion={'open': {'open': 174, 'not_open': 78}, "
+            "'not_open': {'open': 0, 'not_open': 165}}"
+        )
+        candidate = parse_external_confusion(
+            "confusion={'open': {'open': 169, 'not_open': 83}, "
+            "'not_open': {'open': 1, 'not_open': 164}}"
+        )
+        self.assertIsNotNone(baseline)
+        self.assertIsNotNone(candidate)
+        self.assertFalse(candidate_is_not_worse(candidate, baseline))
+
+    def test_failed_vod_is_temporarily_deferred(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            defer_vod(root, "Rips", "Om8u-vmWKkM", "audio download timeout")
+            deferred = load_deferred_ids(root, "rips")
+            self.assertEqual(deferred, {"om8u-vmwkkm"})
+            vods = [
+                {"vod_id": "Om8u-vmWKkM", "live_status": "was_live", "duration": 100},
+                {"vod_id": "next", "live_status": "was_live", "duration": 100},
+            ]
+            self.assertEqual([v["vod_id"] for v in next_unseen_batch(vods, set(), 1, deferred)], ["next"])
 
 
 if __name__ == "__main__":
