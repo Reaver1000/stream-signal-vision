@@ -804,6 +804,7 @@ def main() -> int:
         run_cmd(prep_cmd)
 
         run_name = args.run_name or f"pooled-{session_id}-cls"
+        unload_ollama_model()
         run_cmd(
             [
                 sys.executable,
@@ -839,6 +840,7 @@ def main() -> int:
                     str(yolo_out),
                 ]
             )
+            unload_ollama_model()
             run_cmd(
                 [
                     sys.executable,
