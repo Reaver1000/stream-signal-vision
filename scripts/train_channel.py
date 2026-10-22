@@ -124,6 +124,7 @@ def run_cmd(
     *,
     check: bool = True,
     echo_stdout: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     print(f">> {' '.join(str(part) for part in command)}")
@@ -134,6 +135,7 @@ def run_cmd(
         encoding="utf-8",
         errors="replace",
         env=env,
+        timeout=timeout,
     )
     if echo_stdout and result.stdout:
         _write_stream(result.stdout, sys.stdout)
@@ -367,27 +369,48 @@ def ensure_three_session_ids_for_bootstrap(records: list[dict[str, Any]]) -> lis
 
 def download_vod_audio(url: str, session_dir: Path) -> Path:
     session_dir.mkdir(parents=True, exist_ok=True)
-    for existing in session_dir.glob("source_audio.*"):
-        if existing.is_file():
-            return existing
-    target_template = session_dir / "source_audio.%(ext)s"
-    run_cmd(
-        [
+    def complete_audio_files() -> list[Path]:
+        return [
+            path for path in session_dir.glob("source_audio*.*")
+            if path.is_file() and path.suffix.lower() not in {".part", ".ytdl"} and path.stat().st_size > 0
+        ]
+
+    existing = complete_audio_files()
+    if existing:
+        return max(existing, key=lambda path: path.stat().st_mtime)
+
+    for format_id, label in (("140", "high"), ("139", "low"), ("ba", "best")):
+        target_template = session_dir / f"source_audio_{label}.%(ext)s"
+        command = [
             sys.executable,
             "-m",
             "yt_dlp",
             "-f",
-            "139/ba[ext=m4a]/ba",
+            format_id,
             "--no-progress",
+            "--socket-timeout",
+            "20",
+            "--retries",
+            "2",
+            "--fragment-retries",
+            "2",
             "-o",
             str(target_template),
             "--no-playlist",
             url,
         ]
-    )
-    matches = list(session_dir.glob("source_audio.*"))
-    if matches:
-        return matches[0]
+        try:
+            result = run_cmd(command, check=False, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(f"audio format {format_id} timed out; trying the next available format")
+            continue
+        if result.returncode != 0:
+            if result.stderr:
+                _write_stream(result.stderr, sys.stderr)
+            continue
+        matches = [path for path in complete_audio_files() if path.name.startswith(f"source_audio_{label}.")]
+        if matches:
+            return matches[0]
     raise SystemExit(f"yt-dlp did not produce an audio file in {session_dir}")
 
 
@@ -479,7 +502,7 @@ def ingest_and_label_session(
         )
 
     if cleanup_media:
-        for candidate in [*session_dir.glob("source.*"), *session_dir.glob("source_audio.*")]:
+        for candidate in [*session_dir.glob("source.*"), *session_dir.glob("source_audio*.*")]:
             if candidate.is_file():
                 candidate.unlink(missing_ok=True)
 
