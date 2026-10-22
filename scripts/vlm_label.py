@@ -17,6 +17,7 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import sys
 import urllib.request
 from pathlib import Path
@@ -125,7 +126,7 @@ def normalize_elements(draft, w, h):
     return draft
 
 
-def ask_vlm(b64):
+def ask_vlm(b64, num_gpu=0):
     body = json.dumps({
         "model": MODEL,
         "messages": [
@@ -134,7 +135,7 @@ def ask_vlm(b64):
              "images": [b64]},
         ],
         "format": "json",
-        "options": {"temperature": 0},
+        "options": {"temperature": 0, "num_ctx": 3072, "num_gpu": num_gpu},
         "stream": False,
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=body,
@@ -182,6 +183,8 @@ def main():
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--no-diff", action="store_true", help="label every frame")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "16")),
+                    help="Ollama GPU layers; default 16 leaves VRAM for the desktop and CUDA training")
     a = ap.parse_args()
 
     frames = sorted(p for p in a.frames.glob("*.png"))
@@ -205,7 +208,7 @@ def main():
             path = frames[i]
             try:
                 b64, dims = downscale_b64(path)
-                draft = json.loads(ask_vlm(b64))
+                draft = json.loads(ask_vlm(b64, num_gpu=a.num_gpu))
             except Exception as e:
                 print(f"[{path.name}] FAILED: {e}")
                 continue

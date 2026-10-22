@@ -483,7 +483,7 @@ def ingest_and_label_session(
             if candidate.is_file():
                 candidate.unlink(missing_ok=True)
 
-    if not annotations_path.is_file() and ollama_ready():
+    if (not annotations_path.is_file() or annotations_path.stat().st_size == 0) and ollama_ready():
         run_cmd(
             [
                 sys.executable,

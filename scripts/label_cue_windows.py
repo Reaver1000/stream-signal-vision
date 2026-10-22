@@ -12,6 +12,7 @@ Usage:
 import argparse
 import bisect
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -76,6 +77,8 @@ def main():
     parser.add_argument("--max-no-speech", type=float, default=0.6)
     parser.add_argument("--max-keyframes", type=int, default=120,
                         help="Maximum VLM-labelled keyframes for this VOD (spread across cue windows)")
+    parser.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "16")),
+                        help="Ollama GPU layers; default 16 leaves VRAM for the desktop and CUDA training")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -127,7 +130,8 @@ def main():
             continue
         command = [sys.executable, str(labeler), str(args.frames),
                    "--out", str(args.out), "--session-id", session_id,
-                   "--start", str(start), "--end", str(end), "--limit", str(limit)]
+                   "--start", str(start), "--end", str(end), "--limit", str(limit),
+                   "--num-gpu", str(args.num_gpu)]
         subprocess.run(command, check=True)
 
 
