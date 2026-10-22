@@ -38,6 +38,25 @@ def merge_windows(windows, max_gap=0):
     return merged
 
 
+def evenly_spaced_indices(length, count):
+    if count <= 0 or length <= 0:
+        return []
+    if count >= length:
+        return list(range(length))
+    if count == 1:
+        return [(length - 1) // 2]
+    return [round(i * (length - 1) / (count - 1)) for i in range(count)]
+
+
+def allocate_window_limits(window_count, keyframe_budget):
+    selected_count = min(window_count, keyframe_budget)
+    indices = evenly_spaced_indices(window_count, selected_count)
+    if not indices:
+        return []
+    base, remainder = divmod(keyframe_budget, len(indices))
+    return [(index, base + (position < remainder)) for position, index in enumerate(indices)]
+
+
 def read_jsonl(path):
     with path.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
@@ -55,6 +74,8 @@ def main():
     parser.add_argument("--merge-gap", type=float, default=3.0)
     parser.add_argument("--min-logprob", type=float, default=-1.5)
     parser.add_argument("--max-no-speech", type=float, default=0.6)
+    parser.add_argument("--max-keyframes", type=int, default=120,
+                        help="Maximum VLM-labelled keyframes for this VOD (spread across cue windows)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -90,17 +111,23 @@ def main():
         print("no transcript cues passed the confidence filters")
         return
 
+    if args.max_keyframes < 1:
+        parser.error("--max-keyframes must be at least 1")
+
     labeler = Path(__file__).with_name("vlm_label.py")
     session_id = args.session_id or args.frames.parent.name
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    for start, end, cue_group in merged:
+    window_limits = allocate_window_limits(len(merged), args.max_keyframes)
+    print(f"{len(merged)} merged cue window(s); VLM label budget={sum(limit for _, limit in window_limits)}")
+    for window_index, limit in window_limits:
+        start, end, cue_group = merged[window_index]
         cue_text = " | ".join(f"{c['time']} {c['cue']}: {c['text']}" for c in cue_group)
         print(f"frames[{start}:{end}] {cue_text}")
         if args.dry_run:
             continue
         command = [sys.executable, str(labeler), str(args.frames),
                    "--out", str(args.out), "--session-id", session_id,
-                   "--start", str(start), "--end", str(end)]
+                   "--start", str(start), "--end", str(end), "--limit", str(limit)]
         subprocess.run(command, check=True)
 
 

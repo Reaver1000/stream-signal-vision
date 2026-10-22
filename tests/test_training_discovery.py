@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from train_channel import discover_channel_vods, seed_pooled_state_intervals
 import gui_app
 from train_streams_batch import is_completed_vod, next_unseen_batch
+from label_cue_windows import allocate_window_limits
+from vlm_label import sample_evenly
 
 
 class TrainingDiscoveryTests(unittest.TestCase):
@@ -66,6 +68,12 @@ class TrainingDiscoveryTests(unittest.TestCase):
         ]
         chosen = next_unseen_batch(vods, {"SEEN1"}, 5)
         self.assertEqual([v["vod_id"] for v in chosen], ["new1", "new2"])
+
+    def test_vlm_budget_is_spread_over_cue_windows(self):
+        allocations = allocate_window_limits(49, 120)
+        self.assertEqual(sum(limit for _, limit in allocations), 120)
+        self.assertEqual(len(allocations), 49)
+        self.assertEqual(sample_evenly(list(range(10)), 4), [0, 3, 6, 9])
 
 
 if __name__ == "__main__":

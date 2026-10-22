@@ -82,6 +82,15 @@ def pick_keyframes(frames, use_diff):
     return sorted(set(keep))
 
 
+def sample_evenly(items, limit):
+    if limit is None or limit <= 0 or len(items) <= limit:
+        return list(items)
+    if limit == 1:
+        return [items[(len(items) - 1) // 2]]
+    indices = [round(i * (len(items) - 1) / (limit - 1)) for i in range(limit)]
+    return [items[i] for i in indices]
+
+
 def downscale_b64(path):
     img = cv2.imread(str(path))
     h, w = img.shape[:2]
@@ -186,7 +195,7 @@ def main():
 
     keep = pick_keyframes(frames, use_diff=not a.no_diff)
     if a.limit:
-        keep = keep[: a.limit]
+        keep = sample_evenly(keep, a.limit)
     print(f"{len(frames)} frames in window, {len(keep)} keyframes to label")
 
     n_done, n_review = 0, 0
