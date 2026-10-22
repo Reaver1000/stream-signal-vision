@@ -75,10 +75,12 @@ def main():
     parser.add_argument("--merge-gap", type=float, default=3.0)
     parser.add_argument("--min-logprob", type=float, default=-1.5)
     parser.add_argument("--max-no-speech", type=float, default=0.6)
-    parser.add_argument("--max-keyframes", type=int, default=120,
+    parser.add_argument("--max-keyframes", type=int, default=100,
                         help="Maximum VLM-labelled keyframes for this VOD (spread across cue windows)")
-    parser.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "16")),
-                        help="Ollama GPU layers; default 16 leaves VRAM for the desktop and CUDA training")
+    parser.add_argument("--model", default=os.environ.get("SSV_VLM_MODEL", "qwen2.5vl:7b"),
+                        help="Ollama vision model name")
+    parser.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "-1")),
+                        help="Ollama GPU layers; -1 lets Ollama offload as many layers as fit")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -131,7 +133,7 @@ def main():
         command = [sys.executable, str(labeler), str(args.frames),
                    "--out", str(args.out), "--session-id", session_id,
                    "--start", str(start), "--end", str(end), "--limit", str(limit),
-                   "--num-gpu", str(args.num_gpu)]
+                   "--model", str(args.model), "--num-gpu", str(args.num_gpu)]
         subprocess.run(command, check=True)
 
 

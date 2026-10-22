@@ -25,7 +25,7 @@ from pathlib import Path
 import cv2
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "qwen2.5vl:7b"
+DEFAULT_MODEL = os.environ.get("SSV_VLM_MODEL", "qwen2.5vl:7b")
 DIFF_THRESHOLD = 14.0   # mean absdiff (0-255) worth sending to the VLM
 MAX_IMAGE_EDGE = 1280   # downscale before base64 (VLM time + tokens)
 
@@ -126,9 +126,9 @@ def normalize_elements(draft, w, h):
     return draft
 
 
-def ask_vlm(b64, num_gpu=0):
+def ask_vlm(b64, num_gpu=0, model=None):
     body = json.dumps({
-        "model": MODEL,
+        "model": model or DEFAULT_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": "Label this frame.",
@@ -183,8 +183,10 @@ def main():
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--no-diff", action="store_true", help="label every frame")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "16")),
-                    help="Ollama GPU layers; default 16 leaves VRAM for the desktop and CUDA training")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help="Ollama vision model name (env SSV_VLM_MODEL)")
+    ap.add_argument("--num-gpu", type=int, default=int(os.environ.get("SSV_VLM_NUM_GPU", "-1")),
+                    help="Ollama GPU layers; -1 uses all layers, 0 forces CPU")
     a = ap.parse_args()
 
     frames = sorted(p for p in a.frames.glob("*.png"))
@@ -208,7 +210,7 @@ def main():
             path = frames[i]
             try:
                 b64, dims = downscale_b64(path)
-                draft = json.loads(ask_vlm(b64, num_gpu=a.num_gpu))
+                draft = json.loads(ask_vlm(b64, num_gpu=a.num_gpu, model=a.model))
             except Exception as e:
                 print(f"[{path.name}] FAILED: {e}")
                 continue
