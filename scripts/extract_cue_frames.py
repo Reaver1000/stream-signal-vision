@@ -48,7 +48,11 @@ def main():
     parser.add_argument("--before", type=float, default=6.0)
     parser.add_argument("--after", type=float, default=8.0)
     parser.add_argument("--merge-gap", type=float, default=3.0)
-    parser.add_argument("--fps", type=float, default=1.0)
+    parser.add_argument("--fps", type=float, default=0.25,
+                        help="Sparse cue-window sampling rate; default 0.25 fps (one frame every 4 seconds)")
+    parser.add_argument("--image-format", choices=("jpg", "png"), default="jpg")
+    parser.add_argument("--jpeg-qscale", type=int, default=9,
+                        help="FFmpeg JPEG q:v scale (2=best/largest, 31=worst/smallest)")
     parser.add_argument("--min-logprob", type=float, default=-1.5)
     parser.add_argument("--max-no-speech", type=float, default=0.6)
     parser.add_argument("--dry-run", action="store_true")
@@ -90,21 +94,27 @@ def main():
 
     frames_dir = args.session_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    if any(frames_dir.glob("frame_*.png")):
+    if any(frames_dir.glob("frame_*.png")) or any(frames_dir.glob("frame_*.jpg")):
         raise SystemExit(f"frame directory is not empty; use a new session dir: {frames_dir}")
     records = []
+    extension = "jpg" if args.image_format == "jpg" else "png"
     for start, end, cue_group in windows:
         start_index = int(round(start * args.fps))
-        pattern = frames_dir / "frame_%07d.png"
+        pattern = frames_dir / f"frame_%07d.{extension}"
         command = [ffmpeg, "-hide_banner", "-loglevel", "error",
                    "-ss", format_timestamp(start), "-to", format_timestamp(end),
                    "-i", str(args.media), "-vf", f"fps={args.fps}",
-                   "-start_number", str(start_index), str(pattern)]
+                   "-start_number", str(start_index)]
+        if args.image_format == "jpg":
+            if not 2 <= args.jpeg_qscale <= 31:
+                parser.error("--jpeg-qscale must be between 2 and 31")
+            command.extend(["-q:v", str(args.jpeg_qscale)])
+        command.append(str(pattern))
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode:
             raise SystemExit(f"ffmpeg failed for {format_timestamp(start)}: {result.stderr[-1000:]}")
         for frame_index in range(start_index, int(math.ceil(end * args.fps))):
-            name = f"frame_{frame_index:07d}.png"
+            name = f"frame_{frame_index:07d}.{extension}"
             if (frames_dir / name).is_file():
                 seconds = frame_index / args.fps
                 records.append({"image_path": name,
@@ -122,6 +132,8 @@ def main():
         "platform_id": args.platform,
         "sampling": "speech-cued sparse VOD frames",
         "fps": args.fps,
+        "image_format": args.image_format,
+        "jpeg_qscale": args.jpeg_qscale if args.image_format == "jpg" else None,
         "frames": len(records),
         "cue_windows": len(windows),
     }, indent=2), encoding="utf-8")
