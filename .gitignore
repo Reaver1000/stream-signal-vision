@@ -19,6 +19,7 @@ data/review/
 datasets/private/
 datasets/derived/
 models/weights/
+hf/trade-state-weights-private/
 *.pt
 *.onnx
 *.engine
