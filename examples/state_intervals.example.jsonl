@@ -1,0 +1,6 @@
+{"source_id":"session-a","start":"00:00:00","end":"00:00:20","trade_state":"flat","split":"train","reason":"No filled position evidence in this interval."}
+{"source_id":"session-a","start":"00:00:21","end":"00:00:25","trade_state":"pending","split":"train","reason":"Order ticket visible; no filled position marker."}
+{"source_id":"session-a","start":"00:00:26","end":"00:02:00","trade_state":"open","split":"train","reason":"Signed position quantity/PnL badge visible."}
+{"source_id":"session-b","start":"00:10:00","end":"00:10:30","trade_state":"flat","split":"val","reason":"No filled position evidence."}
+{"source_id":"session-b","start":"00:10:31","end":"00:12:00","trade_state":"open","split":"val","reason":"Owner-verified filled position visible."}
+{"source_id":"session-c","start":"00:20:00","end":"00:22:00","trade_state":"flat","split":"test","reason":"Owner-verified negative interval."}

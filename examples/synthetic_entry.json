@@ -1,0 +1,18 @@
+{
+  "event_id": "synthetic-session-01-event-0001",
+  "source_id": "local-demo",
+  "platform_id": "tradingview",
+  "captured_at": "2026-10-17T14:00:00+00:00",
+  "action": "entry",
+  "confidence": 0.99,
+  "instrument": "MNQ",
+  "direction": "short",
+  "entry_price": "20000.00",
+  "stop_price": "20050.00",
+  "target_prices": ["19975.00", "19950.00"],
+  "displayed_quantity": 4,
+  "scale_fraction": null,
+  "new_stop_price": null,
+  "evidence_ids": ["synthetic-before-0001", "synthetic-after-0001"],
+  "notes": ["synthetic example; not a real provider signal"]
+}

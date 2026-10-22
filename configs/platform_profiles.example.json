@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "note": "Profiles are layout templates, not universal platform coordinates. Calibrate each streamer/window; normalized ROI coordinates are relative to the captured frame.",
+  "platforms": {
+    "topstepx": {
+      "display_name": "TopstepX",
+      "layout_id": "default",
+      "reference_width": 1920,
+      "reference_height": 1080,
+      "regions": {},
+      "element_hints": ["chart", "position_panel", "order_lines", "quantity"]
+    },
+    "tradingview": {
+      "display_name": "TradingView",
+      "layout_id": "default",
+      "reference_width": 1920,
+      "reference_height": 1080,
+      "regions": {},
+      "element_hints": ["chart", "broker_panel", "position_panel", "order_lines"]
+    },
+    "tradovate": {
+      "display_name": "Tradovate",
+      "layout_id": "default",
+      "reference_width": 1920,
+      "reference_height": 1080,
+      "regions": {},
+      "element_hints": ["chart", "dom_or_ladder", "position_panel", "working_orders"]
+    },
+    "wealthcharts": {
+      "display_name": "WealthCharts",
+      "layout_id": "default",
+      "reference_width": 1920,
+      "reference_height": 1080,
+      "regions": {},
+      "element_hints": ["chart", "position_panel", "order_lines", "quantity"]
+    },
+    "mt5": {
+      "display_name": "MetaTrader 5",
+      "layout_id": "default",
+      "reference_width": 1920,
+      "reference_height": 1080,
+      "regions": {},
+      "element_hints": ["chart", "terminal_trade_tab", "sl_tp_markers", "volume"]
+    }
+  }
+}
