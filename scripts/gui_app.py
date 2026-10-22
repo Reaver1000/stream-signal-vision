@@ -419,6 +419,34 @@ class BaseTab(ttk.Frame):
         self.columnconfigure(1, weight=1)
         self.rowconfigure(row, weight=1)
 
+    def _combo_for_var(self, var):
+        for child in self.winfo_children():
+            if isinstance(child, ttk.Combobox):
+                try:
+                    if child.cget("textvariable") == str(var):
+                        return child
+                except tk.TclError:
+                    pass
+        for child in self.winfo_children():
+            if isinstance(child, ttk.Combobox):
+                return child
+        raise RuntimeError("combobox not found")
+
+    def _model_combo(self):
+        # the combobox widget is the one whose textvariable is self.model_var
+        for child in self.winfo_children():
+            if isinstance(child, ttk.Combobox) and getattr(child, "cget", None):
+                try:
+                    if child.cget("textvariable") == str(self.model_var):
+                        return child
+                except tk.TclError:
+                    pass
+        # fallback: scan by name
+        for child in self.winfo_children():
+            if isinstance(child, ttk.Combobox):
+                return child
+        raise RuntimeError("model combobox not found")
+
     def _browse(self, var: tk.StringVar, kind: str, save: bool) -> None:
         if kind == "dir":
             path = filedialog.askdirectory(initialdir=REPO_ROOT)
@@ -438,7 +466,8 @@ class LiveTab(BaseTab):
         self.add_entry("Live stream URL", "live.url")
         self.streamer = self.add_combo("Streamer", "live.streamer", sorted(STREAMER_PRESETS), "nso")
         self.source_id = self.add_entry("Source ID (routes key)", "live.source_id", "nso-live")
-        self.model = self.add_combo("Model", "live.model", [])
+        self.model_var = self.add_combo("Model", "live.model", [])
+        self.model = None
         ttk.Button(self, text="Refresh models", command=self.refresh_models).grid(
             row=self._row - 1, column=2, sticky="w", padx=(6, 0), pady=2
         )
@@ -472,17 +501,19 @@ class LiveTab(BaseTab):
     def refresh_models(self) -> None:
         models = find_models()
         self.model_map = {model_label(m): m for m in models}
-        self.model["values"] = list(self.model_map)
-        current = self.model.get()
+        combo = self._model_combo()
+        combo["values"] = list(self.model_map)
+        current = self.model_var.get()
         if current in self.model_map:
             return
         pref = preferred_model(models)
         if pref:
-            self.model.set(pref)
+            self.model_var.set(pref)
 
     def refresh_anchors(self) -> None:
         self.anchor_templates = find_anchor_templates()
-        self.anchor_template["values"] = [str(p) for p in self.anchor_templates]
+        combo = self._combo_for_var(self.anchor_template)
+        combo["values"] = [str(p) for p in self.anchor_templates]
         if not self.anchor_template.get() and self.anchor_templates:
             self.anchor_template.set(str(self.anchor_templates[0]))
 
@@ -499,7 +530,7 @@ class LiveTab(BaseTab):
         if not url:
             messagebox.showerror("Missing input", "Paste a live stream URL first.")
             return
-        model = self.model_map.get(self.model.get())
+        model = self.model_map.get(self.model_var.get())
         if model is None:
             messagebox.showerror("Missing model", "Pick a trained model (Refresh models if empty).")
             return
@@ -544,7 +575,8 @@ class VodTab(BaseTab):
         self.platform = self.add_combo("Platform", "vod.platform", PLATFORMS, "topstepx")
         self.mode = self.add_combo("Mode", "vod.mode", ("ingest", "loop", "train", "evaluate"), "ingest")
         self.roi = self.add_entry("Chart ROI x,y,w,h", "vod.roi", STREAMER_PRESETS["nso"]["roi"])
-        self.model = self.add_combo("Classifier checkpoint (train/evaluate)", "vod.model", [])
+        self.model_var = self.add_combo("Classifier checkpoint (train/evaluate)", "vod.model", [])
+        self.model = None
         ttk.Button(self, text="Refresh models", command=self.refresh_models).grid(
             row=self._row - 1, column=2, sticky="w", padx=(6, 0), pady=2
         )
@@ -574,13 +606,14 @@ class VodTab(BaseTab):
     def refresh_models(self) -> None:
         models = find_models()
         self.model_map = {model_label(m): m for m in models}
-        self.model["values"] = list(self.model_map)
-        current = self.model.get()
+        combo = self._model_combo()
+        combo["values"] = list(self.model_map)
+        current = self.model_var.get()
         if current in self.model_map:
             return
         pref = preferred_model(models)
         if pref:
-            self.model.set(pref)
+            self.model_var.set(pref)
 
     def apply_preset(self) -> None:
         name = self.streamer.get().strip().lower()
@@ -602,7 +635,7 @@ class VodTab(BaseTab):
                 "Busy", "A processing command is already running (VOD and Batch share one slot)."
             )
             return
-        model_path = self.model_map.get(self.model.get())
+        model_path = self.model_map.get(self.model_var.get())
         argv = build_train_command(
             streamer=self.streamer.get().strip(),
             platform=self.platform.get(),
