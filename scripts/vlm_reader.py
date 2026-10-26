@@ -39,11 +39,12 @@ class OllamaVision:
     """Thin client that keeps the vision model resident between reads."""
 
     def __init__(self, model: str = "qwen2.5vl:7b", keep_alive: str = "30m",
-                 num_predict: int = 220, timeout: float = 60.0):
+                 num_predict: int = 220, timeout: float = 60.0, cooldown: float = 4.0):
         self.model = model
         self.keep_alive = keep_alive
         self.num_predict = num_predict
         self.timeout = timeout
+        self.cooldown = cooldown
         self.last_latency = 0.0
 
     def _post(self, content: str, image_b64: str | None) -> dict:

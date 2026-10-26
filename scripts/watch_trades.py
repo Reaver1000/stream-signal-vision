@@ -161,8 +161,13 @@ def evaluate(image, profile, cache=None, engine=None):
         state = read_trade_auto(image)
 
     if engine is not None and not state.in_trade:
-        data = read_with_vlm(image, engine, cache if cache is not None else {})
-        if data.get("in_trade"):
+        now = time.time()
+        cache = cache if cache is not None else {}
+        data = None
+        if now - cache.get("vlm_at", 0.0) >= getattr(engine, "cooldown", 4.0):
+            cache["vlm_at"] = now
+            data = read_with_vlm(image, engine, cache)
+        if data and data.get("in_trade"):
             state = TradeState()
             state.in_trade = True
             state.direction = data.get("direction")
