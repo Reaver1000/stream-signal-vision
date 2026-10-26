@@ -101,29 +101,46 @@ def signature(state) -> tuple:
 
 def format_message(state, previous, source_id: str, instrument: str | None) -> str | None:
     label = instrument or state.instrument or (previous.instrument if previous else None) or "?"
+    long_side = (state.direction or (previous.direction if previous else None)) == "long"
+    entry_word = "BUY" if long_side else "SELL"
+
+    def levels(s) -> str:
+        parts = []
+        if s.stop:
+            parts.append(f"STOP {money(s.stop)}")
+        if s.targets:
+            parts.append("LIMIT " + " / ".join(money(t) for t in s.targets))
+        return " | ".join(parts)
+
     if state.in_trade and not (previous and previous.in_trade):
-        parts = [f"**{label} {state.direction.upper()}**"]
-        if state.quantity:
-            parts.append(f"qty {state.quantity}")
-        parts.append(f"entry {money(state.entry)}")
-        parts.append(f"SL {money(state.stop)}")
-        if state.targets:
-            parts.append("TP " + " / ".join(money(t) for t in state.targets))
-        return f"[{source_id}] " + " | ".join(parts)
+        qty = f" {state.quantity}" if state.quantity else ""
+        message = f"[{source_id}] **{label} {entry_word}{qty} at market**"
+        tail = levels(state)
+        return message + (f" | {tail}" if tail else "")
+
     if state.in_trade and previous and previous.in_trade:
         changes = []
         if state.quantity and previous.quantity and state.quantity != previous.quantity:
-            delta = state.quantity - previous.quantity
-            changes.append(f"size {previous.quantity} -> {state.quantity} ({delta:+d})")
+            delta = abs(state.quantity - previous.quantity)
+            if state.quantity > previous.quantity:
+                changes.append(f"scale in: {entry_word} {delta} at market (now {state.quantity})")
+            else:
+                closes = "SELL" if long_side else "BUY"
+                changes.append(f"scale out: {closes} {delta} at market (now {state.quantity})")
         if state.stop and previous.stop and abs(state.stop - previous.stop) >= 0.25:
-            changes.append(f"SL {money(previous.stop)} -> {money(state.stop)}")
-        if state.targets and previous.targets and state.targets != previous.targets:
-            changes.append("TP -> " + " / ".join(money(t) for t in state.targets))
+            changes.append(f"STOP {money(previous.stop)} -> {money(state.stop)}")
+        elif state.stop and not previous.stop:
+            changes.append(f"STOP {money(state.stop)}")
+        if state.targets and state.targets != previous.targets:
+            changes.append("LIMIT -> " + " / ".join(money(t) for t in state.targets))
         if changes:
-            return f"[{source_id}] **{label} {state.direction.upper()}** update: " + "; ".join(changes)
+            return f"[{source_id}] **{label}** " + "; ".join(changes)
         return None
+
     if not state.in_trade and previous and previous.in_trade:
-        return f"[{source_id}] **{label} {previous.direction.upper()}** closed"
+        closes = "SELL" if long_side else "BUY"
+        qty = f" {previous.quantity}" if previous.quantity else ""
+        return f"[{source_id}] **{label} {closes}{qty} at market** (flat)"
     return None
 
 

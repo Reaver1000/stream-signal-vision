@@ -333,7 +333,7 @@ def find_chart_pills(image: np.ndarray, layout: dict, ocr_text: bool = False) ->
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
             x, y, pw, ph = cv2.boundingRect(contour)
-            if not (40 <= pw <= 260 and 10 <= ph <= 30):
+            if not (40 <= pw <= (340 if ocr_text else 260) and 10 <= ph <= 30):
                 continue
             if pw / max(1, ph) < 2.2:
                 continue
@@ -346,7 +346,7 @@ def find_chart_pills(image: np.ndarray, layout: dict, ocr_text: bool = False) ->
             if not (y_low <= y + ph / 2 <= y_high):
                 continue
             fill = float((mask[y:y + ph, x:x + pw] > 0).mean())
-            if fill < 0.55:
+            if fill < (0.30 if ocr_text else 0.55):
                 continue
             center_y = y + ph / 2
             gap = dottedness(strict, int(round(center_y)), span_x0, span_x1)
@@ -432,8 +432,100 @@ def read_with_layout(image: np.ndarray, layout: dict, ocr_text: bool = False) ->
     return state
 
 
+TAG_WORD_RE = re.compile(
+    r"(?:\b(?:buy|sell)\s+(?:limit|stop)\b)"
+    r"|(?:\b\d{1,3}\s+(?:limit|stop)\b)"
+    r"|(?:\b(?:limit|stop)\s+order\b)",
+    re.IGNORECASE,
+)
+
+
+def ocr_chart_text(image: np.ndarray, layout: dict, band_height: int = 380,
+                   upscale: float = 1.6) -> list[dict]:
+    """OCR the chart in horizontal bands at native-ish resolution.
+
+    One OCR pass over a tall region gets downscaled internally and loses the
+    small order tags, so scan in bands where the glyphs stay sharp.
+    """
+    h, w = image.shape[:2]
+    ax, ay, aw, ah = layout["axis_roi"]
+    axis_x0 = int(ax * w)
+    axis_x1 = int((ax + aw) * w)
+    y0 = max(0, int(ay * h))
+    y1 = min(h, int((ay + ah) * h))
+    if layout["axis_side"] == "left":
+        x0, x1 = axis_x1, w
+    else:
+        x0, x1 = 0, axis_x0
+    scale = layout["scale"]
+    items = []
+    for band_y in range(y0, y1, max(80, band_height - 60)):
+        band_end = min(y1, band_y + band_height)
+        crop = image[band_y:band_end, x0:x1]
+        if crop.size == 0:
+            continue
+        big = cv2.resize(crop, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_CUBIC)
+        try:
+            result, _ = ocr()(big)
+        except Exception:
+            continue
+        for box, text, conf in (result or []):
+            if not text or float(conf) < 0.4:
+                continue
+            cy = band_y + (sum(p[1] for p in box) / 4) / upscale
+            cx = x0 + (sum(p[0] for p in box) / 4) / upscale
+            items.append({
+                "text": text,
+                "confidence": round(float(conf), 2),
+                "y": round(cy, 1),
+                "x": round(cx, 1),
+                "price": round(price_at(scale, cy), 2),
+            })
+    return items
+
+
+ENTRY_RE = re.compile(r"[+-]?\d[\d,]*\.\d+\s*(?:usd)(?![a-z])", re.IGNORECASE)
+
+
+def assemble_from_ocr(state: TradeState, items: list[dict]) -> None:
+    """Turn OCR lines into orders: stop, limit, and the position badge."""
+    tags = []
+    for item in items:
+        text = item["text"]
+        if TAG_WORD_RE.search(text):
+            info = classify_tag_text(text)
+            tags.append({**item, **info})
+        elif ENTRY_RE.search(text):
+            side = None
+            tags.append({**item, "kind": "entry", "side": side, "qty": None})
+    state.markers = tags
+    stops = [t for t in tags if t.get("kind") == "stop"]
+    limits = [t for t in tags if t.get("kind") == "target"]
+    entries = [t for t in tags if t.get("kind") == "entry"]
+    sides = [t["side"] for t in tags if t.get("side")]
+    qtys = [t["qty"] for t in tags if t.get("qty")]
+
+    state.stop = max(t["price"] for t in stops) if stops else None
+    state.targets = sorted((t["price"] for t in limits), reverse=True)
+    state.entry = max((t["price"] for t in entries), default=None)
+    if sides:
+        state.direction = max(set(sides), key=sides.count)
+    if qtys:
+        state.quantity = min(qtys)
+    state.in_trade = bool(state.stop is not None or state.targets or state.entry is not None)
+    state.confidence = {
+        "ocr_lines": len(items),
+        "stop": state.stop is not None,
+        "targets": len(state.targets),
+        "entry": state.entry is not None,
+        "qty": state.quantity is not None,
+    }
+    if not state.in_trade:
+        state.notes.append("no order lines recognised")
+
+
 def read_trade_auto(image: np.ndarray, ignore_yellow: bool = False) -> TradeState:
-    """Locate the axis and chart automatically, then read the trade from pills."""
+    """Locate the axis, then prefer tag text; fall back to coloured pills."""
     from auto_layout import find_axis
 
     layout = find_axis(image)
@@ -443,6 +535,13 @@ def read_trade_auto(image: np.ndarray, ignore_yellow: bool = False) -> TradeStat
         return state
     state.scale = layout["scale"]
     state.notes.append(f"auto axis ({layout['axis_side']})")
+
+    tags = ocr_chart_text(image, layout)
+    if tags:
+        assemble_from_ocr(state, tags)
+        if state.in_trade:
+            return state
+
     pills = find_chart_pills(image, layout, ocr_text=True)
     assemble_from_pills(state, pills)
     return state
