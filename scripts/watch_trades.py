@@ -31,7 +31,7 @@ SCRIPTS = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from trade_reader import read_trade, read_trade_auto, read_with_layout  # noqa: E402
+from trade_reader import read_trade_auto, read_trade_profile, read_with_layout  # noqa: E402
 
 PROFILES_PATH = REPO_ROOT / "config" / "profiles.json"
 DEFAULT_PROFILES = {
@@ -146,12 +146,7 @@ def format_message(state, previous, source_id: str, instrument: str | None) -> s
 
 def evaluate(image, profile, cache=None, layout_ttl: float = 10.0):
     if profile is not None:
-        return read_trade(
-            image,
-            tuple(profile["chart_roi"]),
-            tuple(profile["axis_roi"]),
-            tag_roi=tuple(profile.get("tag_roi") or ()),
-        )
+        return read_trade_profile(image, profile)
     if cache is None:
         return read_trade_auto(image)
     now = time.time()
@@ -183,6 +178,10 @@ def main() -> int:
     ap.add_argument("--confirm-frames", type=int, default=2,
                     help="identical reads required before emitting")
     ap.add_argument("--max-seconds", type=float, default=None)
+    ap.add_argument("--max-frames", type=int, default=None, help="stop after N frames (replay)")
+    ap.add_argument("--stride", type=int, default=1, help="process every Nth frame (replay)")
+    ap.add_argument("--change-threshold", type=float, default=3.0,
+                    help="mean frame difference below which the last read is reused")
     ap.add_argument("--instrument", default=None,
                     help="label to use in messages when the header is not read (e.g. MNQ)")
     ap.add_argument("--dry-run", action="store_true")
@@ -217,9 +216,27 @@ def main() -> int:
     pending = None
     pending_count = 0
     started = time.time()
+    seen = 0
+    layout_cache: dict = {}
+    last_gray = None
+    last_state = None
     try:
         for image, _, stamp, _ in frames:
-            state = evaluate(image, profile)
+            seen += 1
+            if args.stride > 1 and (seen - 1) % args.stride:
+                continue
+            if args.max_frames is not None and seen > args.max_frames:
+                break
+            small = cv2.cvtColor(cv2.resize(image, (320, 180)), cv2.COLOR_BGR2GRAY)
+            if last_gray is not None and last_state is not None:
+                if float(cv2.absdiff(small, last_gray).mean()) < args.change_threshold:
+                    state = last_state
+                else:
+                    state = evaluate(image, profile, cache=layout_cache)
+            else:
+                state = evaluate(image, profile, cache=layout_cache)
+            last_gray = small
+            last_state = state
             sig = signature(state)
             if sig == pending:
                 pending_count += 1

@@ -490,23 +490,24 @@ BARE_NUMBER_RE = re.compile(r"^[-+]?\d{1,3}$")
 
 
 def attach_quantities(tags: list[dict], items: list[dict]) -> None:
-    """Platforms render the size in its own little box beside the tag.
+    """Pair a bare size box with its tag only when the tag has no digits.
 
-    OCR returns that size as a separate line, so pair a bare number with the
-    nearest tag on the same row and just left of it.
+    Embedded sizes ("2Sell stop") are the reliable case; a free-floating number
+    nearby is often a price fragment, so keep this conservative.
     """
     numbers = [
         item for item in items
         if BARE_NUMBER_RE.match((item.get("text") or "").strip())
+        and 0 < int((item.get("text") or "0").strip().lstrip("+") or 0) <= 50
     ]
     for tag in tags:
-        if tag.get("qty"):
+        if tag.get("qty") or re.search(r"\d", tag.get("text") or ""):
             continue
         best = None
         for item in numbers:
-            if abs(item["y"] - tag["y"]) > 14:
+            if abs(item["y"] - tag["y"]) > 10:
                 continue
-            if not (0 < tag["x"] - item["x"] < 140):
+            if not (0 < tag["x"] - item["x"] < 70):
                 continue
             if best is None or item["x"] > best["x"]:
                 best = item
@@ -553,6 +554,40 @@ def assemble_from_ocr(state: TradeState, items: list[dict]) -> None:
     }
     if not state.in_trade:
         state.notes.append("no order lines recognised")
+
+
+def read_trade_profile(image: np.ndarray, profile: dict) -> TradeState:
+    """Read using fixed ROIs for a known streamer layout (fast, no auto-scan)."""
+    axis_roi = tuple(profile["axis_roi"])
+    chart_roi = tuple(profile["chart_roi"])
+    tag_roi = tuple(profile.get("tag_roi") or ())
+    state = TradeState()
+    labels = read_axis_labels(image, axis_roi)
+    scale = calibrate(labels)
+    if not scale:
+        state.notes.append("axis calibration failed for profile")
+        return state
+    h, w = image.shape[:2]
+    ax, ay, aw, ah = axis_roi
+    axis_x0 = int(ax * w)
+    axis_x1 = int((ax + aw) * w)
+    side = "left" if axis_x0 < w / 2 else "right"
+    layout = {
+        "axis_roi": axis_roi,
+        "chart_roi": chart_roi,
+        "tag_roi": tag_roi,
+        "scale": scale,
+        "axis_side": side,
+    }
+    state.scale = scale
+    items = ocr_chart_text(image, layout)
+    if items:
+        assemble_from_ocr(state, items)
+        if state.in_trade:
+            return state
+    pills = find_chart_pills(image, layout, ocr_text=True)
+    assemble_from_pills(state, pills)
+    return state
 
 
 def read_trade_auto(image: np.ndarray, ignore_yellow: bool = False) -> TradeState:
