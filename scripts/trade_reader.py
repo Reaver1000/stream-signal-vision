@@ -100,23 +100,25 @@ def find_pill(mask: np.ndarray, y: int, chart_width: int, axis_width: int) -> tu
     return (x0, y0 + int(rows.min()), x1, y0 + int(rows.max()))
 
 
-def dominant_tag_color(image: np.ndarray, y: int, tag_roi) -> str | None:
-    h, w = image.shape[:2]
-    x, ry, rw, rh = tag_roi
-    x0, y0 = int(x * w), int(ry * h)
-    x1, y1 = int((x + rw) * w), int((ry + rh) * h)
-    strip = image[max(y0, y - 10): min(y1, y + 11), x0:x1]
-    if strip.size == 0:
-        return None
-    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+def tag_color_at(image: np.ndarray, y: int, tag_rois) -> str | None:
+    """Sample several candidate tag regions and keep the most saturated colour."""
     best, best_count = None, 0
-    for color in ("red", "green", "amber", "blue"):
-        count = int((color_mask(hsv, color) > 0).sum())
-        if count > best_count:
-            best, best_count = color, count
-    if best_count < 40:
-        return None
-    return best
+    for roi in tag_rois:
+        if not roi:
+            continue
+        h, w = image.shape[:2]
+        x, ry, rw, rh = roi
+        x0, y0 = int(x * w), int(ry * h)
+        x1, y1 = int((x + rw) * w), int((ry + rh) * h)
+        strip = image[max(y0, y - 10): min(y1, y + 11), x0:x1]
+        if strip.size == 0:
+            continue
+        hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+        for color in ("red", "green", "amber", "blue"):
+            count = int((color_mask(hsv, color) > 0).sum())
+            if count > best_count:
+                best, best_count = color, count
+    return best if best_count >= 40 else None
 
 
 def dottedness(mask: np.ndarray, y: int, x0: int, x1: int) -> float:
@@ -159,7 +161,7 @@ def parse_pill_text(text: str) -> tuple[int | None, float | None]:
 
 
 def read_trade(image: np.ndarray, chart_roi, axis_roi, ignore_yellow: bool = False,
-               min_line_frac: float = 0.25, tag_roi=None) -> TradeState:
+               min_line_frac: float = 0.25, tag_roi=None, scale: dict | None = None) -> TradeState:
     state = TradeState()
     chart, (ox, oy) = crop_roi(image, chart_roi)
     height, width = chart.shape[:2]
@@ -168,14 +170,19 @@ def read_trade(image: np.ndarray, chart_roi, axis_roi, ignore_yellow: bool = Fal
     if tag_roi is None:
         tag_roi = (chart_roi[0] + chart_roi[2] * 0.80, chart_roi[1], chart_roi[2] * 0.20, chart_roi[3])
 
-    labels = read_axis_labels(image, axis_roi)
-    scale = calibrate(labels)
+    if scale is None:
+        labels = read_axis_labels(image, axis_roi)
+        scale = calibrate(labels)
     if scale:
         state.scale = scale
     else:
         state.notes.append("axis calibration failed")
 
     markers: list[Marker] = []
+    tag_rois = []
+    if tag_roi is not None:
+        tag_rois.append(tag_roi)
+    tag_rois.append(axis_roi)
     for color in COLOR_RANGES:
         mask = color_mask(hsv, color)
         if ignore_yellow:
@@ -204,10 +211,12 @@ def read_trade(image: np.ndarray, chart_roi, axis_roi, ignore_yellow: bool = Fal
             gap = dottedness(mask, y, pills[0], width - axis_width)
             marker.solid = True if color == "blue" else gap < 0.45
             if scale:
+                if not (scale["y_min"] - 6 <= marker.y <= scale["y_max"] + 6):
+                    continue
                 marker.price = round(price_at(scale, marker.y), 2)
             text = ocr_pill(image, marker.pill)
             marker.qty, marker.pnl = parse_pill_text(text)
-            marker.tag_color = dominant_tag_color(image, marker.y, tag_roi)
+            marker.tag_color = tag_color_at(image, marker.y, tag_rois)
             markers.append(marker)
 
     markers.sort(key=lambda m: m.y)
@@ -255,6 +264,125 @@ def _assemble(state: TradeState, markers: list[Marker]) -> None:
         state.notes.append("no stop marker")
     if not state.targets:
         state.notes.append("no target marker")
+
+
+def find_chart_pills(image: np.ndarray, layout: dict) -> list[dict]:
+    """Find order pills in the chart area on the correct side of the axis."""
+    h, w = image.shape[:2]
+    ax, ay, aw, ah = layout["axis_roi"]
+    axis_x0 = int(ax * w)
+    axis_x1 = int((ax + aw) * w)
+    scale = layout["scale"]
+    y_low = scale["y_min"] - 10
+    y_high = scale["y_max"] + 10
+    left_axis = layout["axis_side"] == "left"
+    span_x0 = axis_x1 + 2 if left_axis else int(w * 0.03)
+    span_x1 = int(w * 0.97) if left_axis else axis_x0 - 2
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    pills = []
+    for color in ("red", "green", "blue", "amber"):
+        mask = color_mask(hsv, color)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, y, pw, ph = cv2.boundingRect(contour)
+            if not (40 <= pw <= 240 and 10 <= ph <= 28):
+                continue
+            if pw / max(1, ph) < 2.2:
+                continue
+            if left_axis:
+                if x < span_x0:
+                    continue
+            else:
+                if x + pw > span_x1:
+                    continue
+            if not (y_low <= y + ph / 2 <= y_high):
+                continue
+            fill = float((mask[y:y + ph, x:x + pw] > 0).mean())
+            if fill < 0.55:
+                continue
+            center_y = y + ph / 2
+            gap = dottedness(mask, int(round(center_y)), span_x0, span_x1)
+            pills.append({
+                "color": color,
+                "x0": x, "y0": y, "x1": x + pw, "y1": y + ph,
+                "y": center_y,
+                "price": round(price_at(scale, center_y), 2),
+                "fill": round(fill, 2),
+                "solid": gap < 0.45,
+            })
+    pills.sort(key=lambda p: (-p["price"], p["color"]))
+    return pills
+
+
+def assemble_from_pills(state: TradeState, pills: list[dict]) -> None:
+    state.markers = pills
+    blues = [p for p in pills if p["color"] == "blue"]
+    stop_pills = [p for p in pills if p["color"] == "red" and not p["solid"]]
+    target_pills = [p for p in pills if p["color"] == "green" and not p["solid"]]
+    entry_pills = [p for p in pills if p["solid"] and p["color"] in ("green", "blue")]
+    if not entry_pills and blues:
+        entry_pills = blues
+    if not stop_pills and not target_pills and not entry_pills:
+        state.in_trade = False
+        state.notes.append("no order pills found")
+        return
+
+    entry = None
+    if entry_pills:
+        entry = max(entry_pills, key=lambda p: p["fill"])["price"]
+    elif blues:
+        entry = blues[0]["price"]
+
+    stop = None
+    if stop_pills:
+        stop = max(p["price"] for p in stop_pills)
+    targets = sorted((p["price"] for p in target_pills), reverse=True)
+
+    if stop is not None and targets:
+        state.direction = "long" if stop < max(targets) else "short"
+    elif stop is not None and entry is not None:
+        state.direction = "short" if stop > entry else "long"
+    elif targets and entry is not None:
+        state.direction = "long" if min(targets) > entry else "short"
+
+    state.entry = entry
+    state.stop = stop
+    state.targets = targets
+    state.in_trade = bool(stop is not None or targets)
+    state.confidence = {
+        "pills": len(pills),
+        "entry": entry is not None,
+        "stop": stop is not None,
+        "targets": len(targets),
+    }
+    if entry is None:
+        state.notes.append("no entry pill/line found")
+
+
+def read_with_layout(image: np.ndarray, layout: dict) -> TradeState:
+    """Read a trade using a previously detected layout (cheap, per-frame)."""
+    state = TradeState()
+    state.scale = layout["scale"]
+    pills = find_chart_pills(image, layout)
+    assemble_from_pills(state, pills)
+    return state
+
+
+def read_trade_auto(image: np.ndarray, ignore_yellow: bool = False) -> TradeState:
+    """Locate the axis and chart automatically, then read the trade from pills."""
+    from auto_layout import find_axis
+
+    layout = find_axis(image)
+    state = TradeState()
+    if layout is None:
+        state.notes.append("could not locate a price axis")
+        return state
+    state.scale = layout["scale"]
+    state.notes.append(f"auto axis ({layout['axis_side']})")
+    pills = find_chart_pills(image, layout)
+    assemble_from_pills(state, pills)
+    return state
 
 
 def main() -> int:
