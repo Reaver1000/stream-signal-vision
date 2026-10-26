@@ -20,6 +20,7 @@ optional instrument label. All ROIs are normalized x,y,w,h.
 from __future__ import annotations
 
 import argparse
+from collections import Counter, deque
 import json
 import sys
 import time
@@ -173,10 +174,12 @@ def main() -> int:
     ap.add_argument("--discord-webhook", default=None)
     ap.add_argument("--routes-config", default=None)
     ap.add_argument("--fps", type=float, default=2.0)
-    ap.add_argument("--width", type=int, default=1280)
-    ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--width", type=int, default=1920)
+    ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--confirm-frames", type=int, default=2,
                     help="identical reads required before emitting")
+    ap.add_argument("--vote-window", type=int, default=3, help="frames voted per decision")
+    ap.add_argument("--flat-confirm", type=int, default=3, help="flat reads required to close a trade")
     ap.add_argument("--max-seconds", type=float, default=None)
     ap.add_argument("--max-frames", type=int, default=None, help="stop after N frames (replay)")
     ap.add_argument("--stride", type=int, default=1, help="process every Nth frame (replay)")
@@ -213,13 +216,29 @@ def main() -> int:
         frames = live_frames(args.url, args.fps, args.width, args.height, None, 5.0, None)
 
     previous = None
-    pending = None
-    pending_count = 0
     started = time.time()
     seen = 0
     layout_cache: dict = {}
     last_gray = None
     last_state = None
+    votes: deque = deque(maxlen=max(1, args.vote_window))
+    flat_streak = 0
+    held = None
+
+    def merge(state, reference):
+        """Keep known levels when a single read drops them."""
+        if reference is None or not reference.in_trade or not state.in_trade:
+            return state
+        if state.direction is None:
+            state.direction = reference.direction
+        if state.quantity is None:
+            state.quantity = reference.quantity
+        if state.stop is None:
+            state.stop = reference.stop
+        if not state.targets:
+            state.targets = list(reference.targets)
+        return state
+
     try:
         for image, _, stamp, _ in frames:
             seen += 1
@@ -228,23 +247,33 @@ def main() -> int:
             if args.max_frames is not None and seen > args.max_frames:
                 break
             small = cv2.cvtColor(cv2.resize(image, (320, 180)), cv2.COLOR_BGR2GRAY)
-            if last_gray is not None and last_state is not None:
-                if float(cv2.absdiff(small, last_gray).mean()) < args.change_threshold:
-                    state = last_state
-                else:
-                    state = evaluate(image, profile, cache=layout_cache)
-            else:
+            changed = last_gray is None or float(cv2.absdiff(small, last_gray).mean()) >= args.change_threshold
+            if changed or last_state is None:
                 state = evaluate(image, profile, cache=layout_cache)
+            else:
+                state = last_state
             last_gray = small
             last_state = state
-            sig = signature(state)
-            if sig == pending:
-                pending_count += 1
-            else:
-                pending = sig
-                pending_count = 1
-            if pending_count < args.confirm_frames:
+
+            votes.append((signature(state), state))
+            counts = Counter(sig for sig, _ in votes)
+            best_sig, best_count = counts.most_common(1)[0]
+            needed = min(len(votes), max(2, (args.vote_window + 1) // 2))
+            if best_count < needed:
                 continue
+            state = next(s for sig, s in votes if sig == best_sig)
+
+            if state.in_trade:
+                flat_streak = 0
+                state = merge(state, held)
+                held = state
+            else:
+                flat_streak += 1
+                if held is not None and flat_streak < args.flat_confirm:
+                    state = held
+                else:
+                    held = None
+
             message = format_message(state, previous, args.source_id, args.instrument or (profile or {}).get("instrument"))
             if message:
                 print(f"{stamp} {message}", flush=True)
