@@ -33,19 +33,42 @@ def main() -> int:
         parser.error("Install the optional detector backend first: pip install 'ultralytics>=8.4'")
 
     model = YOLO(args.model)
-    model.train(
-        data=str(args.dataset),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        device=args.device or None,
-        workers=args.workers,
-        amp=args.amp,
-        project=str(args.project),
-        name=args.name,
-        seed=42,
-        deterministic=True,
-    )
+    try:
+        model.train(
+            data=str(args.dataset),
+            epochs=args.epochs,
+            imgsz=args.imgsz,
+            batch=args.batch,
+            device=args.device or None,
+            workers=args.workers,
+            amp=args.amp,
+            val=False,
+            project=str(args.project),
+            name=args.name,
+            seed=42,
+            deterministic=True,
+        )
+    except NotImplementedError as exc:
+        if "torchvision::nms" not in str(exc):
+            raise
+        print("CUDA torchvision NMS unavailable; checkpoint saved, evaluating on CPU.")
+
+    save_dir = Path(model.trainer.save_dir)
+    best = save_dir / "weights" / "best.pt"
+    if not best.is_file():
+        best = save_dir / "weights" / "last.pt"
+    print(f"best checkpoint: {best}")
+    if best.is_file():
+        trained = YOLO(str(best))
+        for split in ("val", "test"):
+            try:
+                metrics = trained.val(
+                    data=str(args.dataset), split=split, imgsz=args.imgsz,
+                    batch=args.batch, device="cpu", workers=0, plots=False,
+                )
+                print(f"{split} metrics: {metrics.results_dict}")
+            except Exception as exc:
+                print(f"{split} evaluation failed: {type(exc).__name__}: {exc}")
     return 0
 
 
