@@ -294,12 +294,12 @@ def classify_tag_text(text: str) -> dict:
     low = (text or "").lower()
     low = re.sub(r"\s*([.,])\s*", r"\1", low)
     kind = None
-    if "limit" in low:
+    if re.search(r"imit|lmit|limt", low):
         kind = "target"
-    elif "stop" in low:
+    elif re.search(r"st[o0]p", low):
         kind = "stop"
     side = None
-    if "sell" in low:
+    if re.search(r"se[l1]l|sell", low):
         side = "long"      # a sell bracket closes a long
     elif "buy" in low:
         side = "short"     # a buy bracket closes a short
@@ -432,10 +432,11 @@ def read_with_layout(image: np.ndarray, layout: dict, ocr_text: bool = False) ->
     return state
 
 
-TAG_WORD_RE = re.compile(
-    r"(?:\b(?:buy|sell)\s+(?:limit|stop)\b)"
-    r"|(?:\b\d{1,3}\s+(?:limit|stop)\b)"
-    r"|(?:\b(?:limit|stop)\s+order\b)",
+TAG_WORD_RE = re.compile(r"(?:imit|lmit|limt|st[o0]p)", re.IGNORECASE)
+TAG_PAIR_RE = re.compile(
+    r"(?:\b(?:buy|sell|se[l1]l)\s+\S*(?:imit|lmit|limt|st[o0]p)\b)"
+    r"|(?:\b\d{1,3}\s*\S*(?:imit|lmit|limt|st[o0]p)\b)"
+    r"|(?:\b\S*(?:imit|lmit|limt|st[o0]p)\s+order\b)",
     re.IGNORECASE,
 )
 
@@ -485,6 +486,35 @@ def ocr_chart_text(image: np.ndarray, layout: dict, band_height: int = 380,
 
 
 ENTRY_RE = re.compile(r"[+-]?\d[\d,]*\.\d+\s*(?:usd)(?![a-z])", re.IGNORECASE)
+BARE_NUMBER_RE = re.compile(r"^[-+]?\d{1,3}$")
+
+
+def attach_quantities(tags: list[dict], items: list[dict]) -> None:
+    """Platforms render the size in its own little box beside the tag.
+
+    OCR returns that size as a separate line, so pair a bare number with the
+    nearest tag on the same row and just left of it.
+    """
+    numbers = [
+        item for item in items
+        if BARE_NUMBER_RE.match((item.get("text") or "").strip())
+    ]
+    for tag in tags:
+        if tag.get("qty"):
+            continue
+        best = None
+        for item in numbers:
+            if abs(item["y"] - tag["y"]) > 14:
+                continue
+            if not (0 < tag["x"] - item["x"] < 140):
+                continue
+            if best is None or item["x"] > best["x"]:
+                best = item
+        if best is not None:
+            try:
+                tag["qty"] = int(best["text"].strip().lstrip("+"))
+            except ValueError:
+                pass
 
 
 def assemble_from_ocr(state: TradeState, items: list[dict]) -> None:
@@ -498,6 +528,7 @@ def assemble_from_ocr(state: TradeState, items: list[dict]) -> None:
         elif ENTRY_RE.search(text):
             side = None
             tags.append({**item, "kind": "entry", "side": side, "qty": None})
+    attach_quantities(tags, items)
     state.markers = tags
     stops = [t for t in tags if t.get("kind") == "stop"]
     limits = [t for t in tags if t.get("kind") == "target"]
