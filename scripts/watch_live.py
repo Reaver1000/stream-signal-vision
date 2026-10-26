@@ -240,18 +240,32 @@ def live_frames(
 
     frame_bytes = width * height * 3
     while True:
-        stream_url = resolve_live_stream_url(url)
-        ffmpeg = subprocess.Popen(
+        # Pipe the stream straight from yt-dlp: a bare DASH manifest URL is not
+        # always readable by ffmpeg (headers/expiry), but yt-dlp handles that.
+        downloader = subprocess.Popen(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-                "-i", stream_url,
-                "-vf", f"fps={fps},scale={width}:{height}",
-                "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1",
+                sys.executable, "-m", "yt_dlp",
+                "-f", "298/136/bv*[height<=720]/bv*/best",
+                "--no-playlist",
+                "-o", "-",
+                url,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        ffmpeg = subprocess.Popen(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-i", "pipe:0",
+                "-vf", f"fps={fps},scale={width}:{height}",
+                "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1",
+            ],
+            stdin=downloader.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if downloader.stdout is not None:
+            downloader.stdout.close()
         assert ffmpeg.stdout is not None
         try:
             while True:
@@ -263,6 +277,7 @@ def live_frames(
                 yield frame, now, datetime.now(timezone.utc).isoformat(timespec="seconds"), (anchor(frame) if anchor else None)
         finally:
             ffmpeg.kill()
+            downloader.kill()
         print(f"[watch_live] stream ended; reconnecting in {reconnect_seconds}s", flush=True)
         time.sleep(reconnect_seconds)
 
