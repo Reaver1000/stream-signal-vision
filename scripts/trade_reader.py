@@ -266,7 +266,52 @@ def _assemble(state: TradeState, markers: list[Marker]) -> None:
         state.notes.append("no target marker")
 
 
-def find_chart_pills(image: np.ndarray, layout: dict) -> list[dict]:
+_PILL_TEXT_CACHE: dict[tuple, str] = {}
+
+
+def ocr_pill_text(image: np.ndarray, box: tuple[int, int, int, int]) -> str:
+    key = box
+    if key in _PILL_TEXT_CACHE:
+        return _PILL_TEXT_CACHE[key]
+    x0, y0, x1, y1 = box
+    pad = 7
+    crop = image[max(0, y0 - pad): y1 + pad, max(0, x0 - pad): x1 + pad]
+    text = ""
+    if crop.size:
+        big = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        try:
+            result, _ = ocr()(big)
+            text = " ".join(t for _, t, _ in (result or []))
+        except Exception:
+            text = ""
+    _PILL_TEXT_CACHE[key] = text
+    if len(_PILL_TEXT_CACHE) > 400:
+        _PILL_TEXT_CACHE.clear()
+    return text
+
+
+def classify_tag_text(text: str) -> dict:
+    low = (text or "").lower()
+    low = re.sub(r"\s*([.,])\s*", r"\1", low)
+    kind = None
+    if "limit" in low:
+        kind = "target"
+    elif "stop" in low:
+        kind = "stop"
+    side = None
+    if "sell" in low:
+        side = "long"      # a sell bracket closes a long
+    elif "buy" in low:
+        side = "short"     # a buy bracket closes a short
+    qty = None
+    for token in re.findall(r"(?<![\d.])(\d{1,3})(?![\d.])", low):
+        value = int(token)
+        if 0 < value <= 500:
+            qty = value if qty is None else min(qty, value)
+    return {"kind": kind, "side": side, "qty": qty}
+
+
+def find_chart_pills(image: np.ndarray, layout: dict, ocr_text: bool = False) -> list[dict]:
     """Find order pills in the chart area on the correct side of the axis."""
     h, w = image.shape[:2]
     ax, ay, aw, ah = layout["axis_roi"]
@@ -305,27 +350,35 @@ def find_chart_pills(image: np.ndarray, layout: dict) -> list[dict]:
                 continue
             center_y = y + ph / 2
             gap = dottedness(strict, int(round(center_y)), span_x0, span_x1)
-            pills.append({
+            entry = {
                 "color": color,
                 "x0": x, "y0": y, "x1": x + pw, "y1": y + ph,
                 "y": center_y,
                 "price": round(price_at(scale, center_y), 2),
                 "fill": round(fill, 2),
                 "solid": gap < 0.45,
-            })
+            }
+            if ocr_text:
+                text = ocr_pill_text(image, (x, y, x + pw, y + ph))
+                entry["text"] = text
+                entry.update(classify_tag_text(text))
+            pills.append(entry)
     pills.sort(key=lambda p: (-p["price"], p["color"]))
     return pills
 
 
 def assemble_from_pills(state: TradeState, pills: list[dict]) -> None:
     state.markers = pills
+    text_stops = [p for p in pills if p.get("kind") == "stop"]
+    text_targets = [p for p in pills if p.get("kind") == "target"]
+    side_votes = [p.get("side") for p in pills if p.get("side")]
     blues = [p for p in pills if p["color"] == "blue"]
     stop_pills = [p for p in pills if p["color"] == "red" and not p["solid"]]
     target_pills = [p for p in pills if p["color"] == "green" and not p["solid"]]
     entry_pills = [p for p in pills if p["solid"] and p["color"] in ("green", "blue")]
     if not entry_pills and blues:
         entry_pills = blues
-    if not stop_pills and not target_pills and not entry_pills:
+    if not (text_stops or text_targets or stop_pills or target_pills or entry_pills):
         state.in_trade = False
         state.notes.append("no order pills found")
         return
@@ -336,12 +389,20 @@ def assemble_from_pills(state: TradeState, pills: list[dict]) -> None:
     elif blues:
         entry = blues[0]["price"]
 
-    stop = None
-    if stop_pills:
+    stop = max(p["price"] for p in text_stops) if text_stops else None
+    targets = sorted((p["price"] for p in text_targets), reverse=True)
+    if stop is None and stop_pills:
         stop = max(p["price"] for p in stop_pills)
-    targets = sorted((p["price"] for p in target_pills), reverse=True)
+    if not targets and target_pills:
+        targets = sorted((p["price"] for p in target_pills), reverse=True)
 
-    if stop is not None and targets:
+    quantities = [p["qty"] for p in pills if p.get("qty")]
+    if quantities:
+        state.quantity = min(quantities)
+
+    if side_votes:
+        state.direction = max(set(side_votes), key=side_votes.count)
+    elif stop is not None and targets:
         state.direction = "long" if stop < max(targets) else "short"
     elif stop is not None and entry is not None:
         state.direction = "short" if stop > entry else "long"
@@ -362,11 +423,11 @@ def assemble_from_pills(state: TradeState, pills: list[dict]) -> None:
         state.notes.append("no entry pill/line found")
 
 
-def read_with_layout(image: np.ndarray, layout: dict) -> TradeState:
+def read_with_layout(image: np.ndarray, layout: dict, ocr_text: bool = False) -> TradeState:
     """Read a trade using a previously detected layout (cheap, per-frame)."""
     state = TradeState()
     state.scale = layout["scale"]
-    pills = find_chart_pills(image, layout)
+    pills = find_chart_pills(image, layout, ocr_text=ocr_text)
     assemble_from_pills(state, pills)
     return state
 
@@ -382,7 +443,7 @@ def read_trade_auto(image: np.ndarray, ignore_yellow: bool = False) -> TradeStat
         return state
     state.scale = layout["scale"]
     state.notes.append(f"auto axis ({layout['axis_side']})")
-    pills = find_chart_pills(image, layout)
+    pills = find_chart_pills(image, layout, ocr_text=True)
     assemble_from_pills(state, pills)
     return state
 
