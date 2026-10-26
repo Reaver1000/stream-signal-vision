@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from chart_lines import COLOR_RANGES, color_mask, crop_roi, suppress_pure_yellow
+from chart_lines import COLOR_RANGES, LOOSE_RANGES, color_mask, color_mask_range, crop_roi, suppress_pure_yellow
 from price_axis import calibrate, get_ocr, parse_price, price_at, read_axis_labels
 
 _OCR = None
@@ -282,11 +282,13 @@ def find_chart_pills(image: np.ndarray, layout: dict) -> list[dict]:
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     pills = []
     for color in ("red", "green", "blue", "amber"):
-        mask = color_mask(hsv, color)
+        mask = color_mask_range(hsv, LOOSE_RANGES, color)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 13), np.uint8))
+        strict = color_mask(hsv, color)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
             x, y, pw, ph = cv2.boundingRect(contour)
-            if not (40 <= pw <= 240 and 10 <= ph <= 28):
+            if not (40 <= pw <= 260 and 10 <= ph <= 30):
                 continue
             if pw / max(1, ph) < 2.2:
                 continue
@@ -302,7 +304,7 @@ def find_chart_pills(image: np.ndarray, layout: dict) -> list[dict]:
             if fill < 0.55:
                 continue
             center_y = y + ph / 2
-            gap = dottedness(mask, int(round(center_y)), span_x0, span_x1)
+            gap = dottedness(strict, int(round(center_y)), span_x0, span_x1)
             pills.append({
                 "color": color,
                 "x0": x, "y0": y, "x1": x + pw, "y1": y + ph,

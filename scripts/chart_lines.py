@@ -16,13 +16,30 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# HSV ranges (OpenCV: H 0-179, S 0-255, V 0-255)
+# Strict ranges: used to judge whether a line is solid or dotted, so candle
+# wicks and faint drawings must not count as line pixels.
 COLOR_RANGES = {
     "green": [((35, 120, 90), (90, 255, 255))],
     "red": [((0, 130, 130), (8, 255, 255)), ((172, 130, 130), (179, 255, 255))],
     "blue": [((100, 130, 100), (130, 255, 255))],
     "amber": [((15, 120, 120), (32, 255, 255))],
 }
+
+# Loose ranges: used to find order pills, which some platforms draw in muted
+# maroon/navy rather than saturated colours.
+LOOSE_RANGES = {
+    "green": [((32, 80, 50), (95, 255, 255))],
+    "red": [((0, 70, 50), (14, 255, 255)), ((166, 70, 50), (179, 255, 255))],
+    "blue": [((90, 60, 50), (140, 255, 255))],
+    "amber": [((12, 80, 80), (32, 255, 255))],
+}
+
+
+def color_mask_range(hsv: np.ndarray, ranges: dict, color: str) -> np.ndarray:
+    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    for lo, hi in ranges.get(color, []):
+        mask |= cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
+    return mask
 
 
 def crop_roi(image: np.ndarray, roi) -> tuple[np.ndarray, tuple[int, int]]:
