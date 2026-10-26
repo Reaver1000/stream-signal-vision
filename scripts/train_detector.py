@@ -18,6 +18,9 @@ def main() -> int:
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default="", help="0, cpu, or empty for auto")
+    parser.add_argument("--amp", action="store_true",
+                        help="Enable mixed precision (off by default for Windows CUDA compatibility)")
+    parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--project", type=Path, default=Path("runs/vision"))
     parser.add_argument("--name", default="pooled-stream-ui")
     args = parser.parse_args()
@@ -36,6 +39,8 @@ def main() -> int:
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device or None,
+        workers=args.workers,
+        amp=args.amp,
         project=str(args.project),
         name=args.name,
         seed=42,
