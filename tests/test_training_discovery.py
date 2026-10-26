@@ -76,6 +76,14 @@ class TrainingDiscoveryTests(unittest.TestCase):
         chosen = next_unseen_batch(vods, {"SEEN1"}, 5)
         self.assertEqual([v["vod_id"] for v in chosen], ["new1", "new2"])
 
+    def test_batch_picker_matches_slugified_ledger_ids(self):
+        vods = [
+            {"vod_id": "-A9kRAyOvOU", "live_status": "was_live", "duration": 100},
+            {"vod_id": "LI3MYdSQwAk", "live_status": "was_live", "duration": 100},
+        ]
+        chosen = next_unseen_batch(vods, {"a9krayovou"}, 5)
+        self.assertEqual([v["vod_id"] for v in chosen], ["LI3MYdSQwAk"])
+
     def test_vlm_budget_is_spread_over_cue_windows(self):
         allocations = allocate_window_limits(49, 120)
         self.assertEqual(sum(limit for _, limit in allocations), 120)

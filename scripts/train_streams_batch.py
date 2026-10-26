@@ -17,6 +17,11 @@ from train_channel import discover_channel_vods, load_ledger
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def normalize_vod_id(value: str) -> str:
+    """Compare VOD ids regardless of dashes/underscores/case or slugification."""
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
 def is_completed_vod(vod: dict[str, Any]) -> bool:
     status = str(vod.get("live_status") or "").lower()
     if vod.get("is_live") or status in {"is_live", "is_upcoming", "is_upcoming_live"}:
@@ -29,11 +34,11 @@ def next_unseen_batch(
     deferred_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     chosen = []
-    seen = {value.lower() for value in seen_ids | (deferred_ids or set())}
+    seen = {normalize_vod_id(value) for value in seen_ids | (deferred_ids or set())}
     queued: set[str] = set()
     for vod in vods:
         vod_id = str(vod.get("vod_id") or "")
-        normalized = vod_id.lower()
+        normalized = normalize_vod_id(vod_id)
         if not is_completed_vod(vod) or not normalized or normalized in seen or normalized in queued:
             continue
         chosen.append(vod)
