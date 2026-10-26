@@ -32,7 +32,8 @@ SCRIPTS = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from trade_reader import read_trade_auto, read_trade_profile, read_with_layout  # noqa: E402
+from trade_reader import TradeState, read_trade_auto, read_trade_profile, read_with_layout  # noqa: E402
+from vlm_reader import OllamaVision, read_with_vlm  # noqa: E402
 
 PROFILES_PATH = REPO_ROOT / "config" / "profiles.json"
 DEFAULT_PROFILES = {
@@ -100,7 +101,7 @@ def signature(state) -> tuple:
     )
 
 
-def format_message(state, previous, source_id: str, instrument: str | None) -> str | None:
+def format_message(state, previous, source_id: str, instrument: str | None, stop_step: float = 2.0) -> str | None:
     label = instrument or state.instrument or (previous.instrument if previous else None) or "?"
     long_side = (state.direction or (previous.direction if previous else None)) == "long"
     entry_word = "BUY" if long_side else "SELL"
@@ -128,7 +129,7 @@ def format_message(state, previous, source_id: str, instrument: str | None) -> s
             else:
                 closes = "SELL" if long_side else "BUY"
                 changes.append(f"scale out: {closes} {delta} at market (now {state.quantity})")
-        if state.stop and previous.stop and abs(state.stop - previous.stop) >= 0.25:
+        if state.stop and previous.stop and abs(state.stop - previous.stop) >= stop_step:
             changes.append(f"STOP {money(previous.stop)} -> {money(state.stop)}")
         elif state.stop and not previous.stop:
             changes.append(f"STOP {money(state.stop)}")
@@ -145,21 +146,32 @@ def format_message(state, previous, source_id: str, instrument: str | None) -> s
     return None
 
 
-def evaluate(image, profile, cache=None, layout_ttl: float = 10.0):
+def evaluate(image, profile, cache=None, engine=None):
+    """OCR first (fast and exact); vision model only when OCR finds nothing."""
     if profile is not None:
-        return read_trade_profile(image, profile)
-    if cache is None:
-        return read_trade_auto(image)
-    now = time.time()
-    layout = cache.get("layout")
-    if layout is None or now - cache.get("at", 0.0) > layout_ttl:
-        from auto_layout import find_axis
-        layout = find_axis(image)
-        cache["layout"] = layout
-        cache["at"] = now
-    if layout is None:
-        return read_trade_auto(image)
-    return read_with_layout(image, layout)
+        state = read_trade_profile(image, profile)
+    elif cache is not None:
+        layout = cache.get("layout")
+        if layout is None:
+            from auto_layout import find_axis
+            layout = find_axis(image)
+            cache["layout"] = layout
+        state = read_with_layout(image, layout) if layout else read_trade_auto(image)
+    else:
+        state = read_trade_auto(image)
+
+    if engine is not None and not state.in_trade:
+        data = read_with_vlm(image, engine, cache if cache is not None else {})
+        if data.get("in_trade"):
+            state = TradeState()
+            state.in_trade = True
+            state.direction = data.get("direction")
+            state.quantity = data.get("quantity")
+            state.stop = data.get("stop")
+            state.targets = list(data.get("targets") or [])
+            state.instrument = data.get("instrument")
+            state.notes.append("vlm fallback")
+    return state
 
 
 def main() -> int:
@@ -170,6 +182,11 @@ def main() -> int:
     source.add_argument("--image", type=Path, help="single still image")
     ap.add_argument("--profile", default="auto",
                     help="auto (find the axis itself) or a name from config/profiles.json")
+    ap.add_argument("--reader", choices=("vlm", "ocr"), default="vlm",
+                    help="vlm reads the tags with a local vision model; ocr uses text scanning")
+    ap.add_argument("--vlm-model", default="qwen2.5vl:7b")
+    ap.add_argument("--vlm-keep-alive", default="30m",
+                    help="how long Ollama keeps the model resident between reads")
     ap.add_argument("--source-id", default="live-stream")
     ap.add_argument("--discord-webhook", default=None)
     ap.add_argument("--routes-config", default=None)
@@ -178,8 +195,10 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--confirm-frames", type=int, default=2,
                     help="identical reads required before emitting")
-    ap.add_argument("--vote-window", type=int, default=3, help="frames voted per decision")
-    ap.add_argument("--flat-confirm", type=int, default=3, help="flat reads required to close a trade")
+    ap.add_argument("--vote-window", type=int, default=1, help="frames voted per decision")
+    ap.add_argument("--flat-confirm", type=int, default=2, help="flat reads required to close a trade")
+    ap.add_argument("--stop-step", type=float, default=2.0,
+                    help="minimum stop change to report (filters axis interpolation jitter)")
     ap.add_argument("--max-seconds", type=float, default=None)
     ap.add_argument("--max-frames", type=int, default=None, help="stop after N frames (replay)")
     ap.add_argument("--stride", type=int, default=1, help="process every Nth frame (replay)")
@@ -201,12 +220,18 @@ def main() -> int:
 
     from watch_live import live_frames, post_discord, replay_frames
 
+    engine = None
+    if args.reader == "vlm":
+        engine = OllamaVision(args.vlm_model, args.vlm_keep_alive)
+        load = engine.warm()
+        print(f"[vlm] {args.vlm_model} resident (load {load:.1f}s, keep_alive {args.vlm_keep_alive})", flush=True)
+
     if args.image is not None:
         image = cv2.imread(str(args.image))
         if image is None:
             raise SystemExit(f"cannot read {args.image}")
-        state = evaluate(image, profile)
-        message = format_message(state, None, args.source_id, args.instrument or (profile or {}).get("instrument"))
+        state = evaluate(image, profile, engine=engine)
+        message = format_message(state, None, args.source_id, args.instrument or (profile or {}).get("instrument"), args.stop_step)
         print(message or "[no position detected]")
         return 0
 
@@ -249,7 +274,7 @@ def main() -> int:
             small = cv2.cvtColor(cv2.resize(image, (320, 180)), cv2.COLOR_BGR2GRAY)
             changed = last_gray is None or float(cv2.absdiff(small, last_gray).mean()) >= args.change_threshold
             if changed or last_state is None:
-                state = evaluate(image, profile, cache=layout_cache)
+                state = evaluate(image, profile, cache=layout_cache, engine=engine)
             else:
                 state = last_state
             last_gray = small
@@ -274,7 +299,7 @@ def main() -> int:
                 else:
                     held = None
 
-            message = format_message(state, previous, args.source_id, args.instrument or (profile or {}).get("instrument"))
+            message = format_message(state, previous, args.source_id, args.instrument or (profile or {}).get("instrument"), args.stop_step)
             if message:
                 print(f"{stamp} {message}", flush=True)
                 if webhook and not args.dry_run:
