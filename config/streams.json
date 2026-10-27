@@ -1,0 +1,38 @@
+{
+  "options": {
+    "poll_seconds": 60,
+    "reader": "vlm",
+    "routes_config": "C:\\Users\\david\\Documents\\Default Project\\stream-signal-vision\\data\\raw\\webhook_routes.json"
+  },
+  "channels": [
+    {
+      "name": "nso",
+      "streams_url": "https://www.youtube.com/@NEVERSTOPPEDOUT/streams",
+      "instrument": "MNQ",
+      "source_id": "nso-live",
+      "enabled": true
+    },
+    {
+      "name": "keyflow",
+      "streams_url": "https://www.youtube.com/@KeyflowTrades/streams",
+      "instrument": "NQ",
+      "source_id": "keyflow-live",
+      "enabled": true
+    },
+    {
+      "name": "dhesi",
+      "streams_url": "https://www.youtube.com/@dhesitrades/streams",
+      "instrument": "NQ",
+      "source_id": "dhesi-live",
+      "enabled": true
+    },
+    {
+      "name": "rips",
+      "streams_url": "https://www.youtube.com/@RipsTrades/streams",
+      "instrument": "MNQ",
+      "source_id": "rips-live",
+      "enabled": false,
+      "note": "multi-account layout produces noisy tags; enable after the Rips reader is fixed"
+    }
+  ]
+}
