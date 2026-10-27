@@ -11,21 +11,33 @@
       "streams_url": "https://www.youtube.com/@NEVERSTOPPEDOUT/streams",
       "instrument": "MNQ",
       "source_id": "nso-live",
-      "enabled": true
+      "enabled": true,
+      "readers": [
+        "audio"
+      ],
+      "audio_model": "small.en"
     },
     {
       "name": "keyflow",
       "streams_url": "https://www.youtube.com/@KeyflowTrades/streams",
       "instrument": "NQ",
       "source_id": "keyflow-live",
-      "enabled": true
+      "enabled": true,
+      "readers": [
+        "audio"
+      ],
+      "audio_model": "small.en"
     },
     {
       "name": "dhesi",
       "streams_url": "https://www.youtube.com/@dhesitrades/streams",
       "instrument": "NQ",
       "source_id": "dhesi-live",
-      "enabled": true
+      "enabled": true,
+      "readers": [
+        "audio"
+      ],
+      "audio_model": "small.en"
     },
     {
       "name": "rips",
@@ -33,7 +45,11 @@
       "instrument": "MNQ",
       "source_id": "rips-live",
       "enabled": false,
-      "note": "multi-account layout produces noisy tags; enable after the Rips reader is fixed"
+      "note": "multi-account layout produces noisy tags; enable after the Rips reader is fixed",
+      "readers": [
+        "audio"
+      ],
+      "audio_model": "small.en"
     }
   ]
 }

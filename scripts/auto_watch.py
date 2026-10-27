@@ -75,24 +75,35 @@ def start_watcher(entry: dict, video_id: str, args) -> dict:
     )
     handle.flush()
 
-    command = [
-        sys.executable, "-u", "scripts/watch_trades.py",
-        "--url", f"https://www.youtube.com/watch?v={video_id}",
-        "--instrument", entry.get("instrument", "NQ"),
-        "--source-id", entry["source_id"],
-        "--reader", args.reader,
-    ]
+    readers = entry.get("readers") or ["audio"]
+    source_id = entry["source_id"] if len(readers) == 1 else entry["source_id"]
+    if "audio" in readers:
+        command = [
+            sys.executable, "-u", "scripts/watch_audio.py",
+            "--url", f"https://www.youtube.com/watch?v={video_id}",
+            "--instrument", entry.get("instrument", "NQ"),
+            "--source-id", source_id,
+            "--model", entry.get("audio_model", "small.en"),
+        ]
+    else:
+        command = [
+            sys.executable, "-u", "scripts/watch_trades.py",
+            "--url", f"https://www.youtube.com/watch?v={video_id}",
+            "--instrument", entry.get("instrument", "NQ"),
+            "--source-id", source_id,
+            "--reader", args.reader,
+        ]
+        if entry.get("profile"):
+            command += ["--profile", entry["profile"]]
     if args.routes_config:
         command += ["--routes-config", args.routes_config]
-    if entry.get("profile"):
-        command += ["--profile", entry["profile"]]
     if args.dry_run:
         command.append("--dry-run")
 
     process = subprocess.Popen(
         command, cwd=str(REPO_ROOT), stdout=handle, stderr=subprocess.STDOUT
     )
-    log(f"started {entry['name']} ({video_id}) pid={process.pid} -> {log_path.name}")
+    log(f"started {entry['name']} ({video_id}, {'/'.join(readers)}) pid={process.pid} -> {log_path.name}")
     return {
         "process": process,
         "handle": handle,
@@ -100,6 +111,7 @@ def start_watcher(entry: dict, video_id: str, args) -> dict:
         "started": time.time(),
         "entry": entry,
         "log": log_path,
+        "readers": readers,
     }
 
 
