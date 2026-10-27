@@ -54,11 +54,19 @@ def read_position(frame, roi, model) -> int | None:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height_px, width_px = crop.shape[:2]
     blobs = []
     for contour in contours:
         x, y, bw, bh = cv2.boundingRect(contour)
-        if bh >= max(14, int(crop.shape[0] * 0.25)) and bw >= 4:
-            blobs.append((x, y, bw, bh))
+        if bh < max(12, int(height_px * 0.35)) or bw < 4:
+            continue
+        # A digit never fills the crop or touches its edges; that pattern means
+        # the panel is covered by an overlay and the read is meaningless.
+        if x <= 1 or y <= 1 or x + bw >= width_px - 1 or y + bh >= height_px - 1:
+            continue
+        if bh / max(1, bw) < 0.7:
+            continue
+        blobs.append((x, y, bw, bh))
     if not blobs:
         return None
     blobs.sort(key=lambda b: b[0])
@@ -111,6 +119,48 @@ def format_change(previous: int | None, current: int, instrument: str) -> str | 
     if delta < 0:
         return f"**SELL {abs(delta)}{name} at market** (now {current:+d})"
     return None
+
+
+def format_commands(previous: int, current: int, instrument: str) -> list[str]:
+    """Translate a position change into the NT8 relay command lines."""
+    inst = instrument.upper()
+    if current == previous:
+        return []
+    if current == 0:
+        return ["FLATTEN"]
+    if previous == 0:
+        side = "long" if current > 0 else "short"
+        return [f"OPEN|{inst}|{side}|{abs(current)}|0|"]
+    flip = (current > 0) != (previous > 0)
+    if flip:
+        side = "long" if current > 0 else "short"
+        return ["FLATTEN", f"OPEN|{inst}|{side}|{abs(current)}|0|"]
+    delta = abs(current) - abs(previous)
+    if delta > 0:
+        side = "long" if current > 0 else "short"
+        return [f"OPEN|{inst}|{side}|{delta}|0|"]
+    if delta < 0:
+        return [f"CLOSE|{abs(delta)}"]
+    return []
+
+
+class NT8Bridge:
+    def __init__(self, host: str = "127.0.0.1", port: int = 7777, timeout: float = 5.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+
+    def send(self, line: str) -> str:
+        import socket
+
+        with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
+            sock.sendall((line + "\n").encode())
+            sock.settimeout(self.timeout)
+            try:
+                data = sock.recv(200)
+            except Exception:
+                return ""
+        return data.decode(errors="replace").strip()
 
 
 def post_discord(webhook: str, content: str) -> None:
@@ -185,11 +235,19 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--direct", action="store_true",
                         help="treat --url as a direct ffmpeg stream (Discord/HLS feed)")
+    parser.add_argument("--nt-host", default="127.0.0.1")
+    parser.add_argument("--nt-port", type=int, default=7777)
+    parser.add_argument("--nt-instrument", default="MNQ")
+    parser.add_argument("--no-nt", action="store_true", help="do not send to NinjaTrader")
+    parser.add_argument("--nt-dry-run", action="store_true", help="print NT8 commands without sending")
     args = parser.parse_args()
 
     roi = tuple(float(v) for v in args.roi.split(","))
     model = load_model()
     webhook = resolve_webhook(args.discord_webhook, args.routes_config, args.source_id)
+    bridge = NT8Bridge(args.nt_host, args.nt_port)
+    print(f"[position] NT8 target {args.nt_host}:{args.nt_port} instrument={args.nt_instrument}"
+          f"{' (dry run)' if args.nt_dry_run or args.no_nt else ''}", flush=True)
 
     if args.direct:
         print("[position] direct stream mode", flush=True)
@@ -217,14 +275,25 @@ def main() -> int:
             continue
         if value != previous:
             message = format_change(previous, value, args.instrument)
+            commands = format_commands(previous, value, args.nt_instrument)
             previous = value
             if message:
                 print(f"{stamp} {message}", flush=True)
-                if webhook and not args.dry_run:
+            if commands:
+                for command in commands:
+                    if args.nt_dry_run or args.no_nt:
+                        print(f"  nt> {command}", flush=True)
+                        continue
                     try:
-                        post_discord(webhook, f"[{args.source_id}] {message}")
+                        reply = bridge.send(command)
+                        print(f"  nt> {command}  <- {reply}", flush=True)
                     except Exception as exc:
-                        print(f"  discord error: {exc}", flush=True)
+                        print(f"  nt error: {exc}", flush=True)
+            if message and webhook and not args.dry_run:
+                try:
+                    post_discord(webhook, f"[{args.source_id}] {message}")
+                except Exception as exc:
+                    print(f"  discord error: {exc}", flush=True)
         if args.max_seconds and time.time() - started > args.max_seconds:
             break
     return 0
