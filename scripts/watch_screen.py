@@ -91,10 +91,16 @@ def read_with_digits(crop: np.ndarray) -> int | None:
     big = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
     height, width = big.shape[:2]
     hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
-    value = hsv[:, :, 2]
+    hue = hsv[:, :, 0]
     saturation = hsv[:, :, 1]
-    mask = (((value >= 70) & (saturation >= 70)) | (value >= 140)).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+    value = hsv[:, :, 2]
+    # Only coloured ink counts. The grey "POSITION" label sits just above the
+    # number and its letters otherwise read as digits.
+    red = ((hue <= 15) | (hue >= 165)) & (saturation >= 80) & (value >= 70)
+    green = (hue >= 35) & (hue <= 100) & (saturation >= 80) & (value >= 70)
+    white = (value >= 140) & (saturation < 70)
+    mask = (red | green | white).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     blobs = []
@@ -108,6 +114,9 @@ def read_with_digits(crop: np.ndarray) -> int | None:
     if not blobs:
         return None
     blobs.sort(key=lambda b: b[0])
+    tallest = max(b[3] for b in blobs)
+    # The grey "POSITION" caption is smaller than the number; drop it by height.
+    blobs = [b for b in blobs if b[3] >= tallest * 0.65]
 
     at_index = None
     for index, (x, y, w, h) in enumerate(blobs):
@@ -243,6 +252,9 @@ def main() -> int:
     if region["height"] < 20 or region["width"] < 40:
         print(f"[screen] WARNING: box is only {region['width']}x{region['height']}px. "
               f"Redraw it around the whole POSITION number (needs ~25px height).", flush=True)
+    if args.dump is not None:
+        args.dump.mkdir(parents=True, exist_ok=True)
+        print(f"[screen] dumping crops to {args.dump}", flush=True)
 
     previous = 0
     baseline_set = False
@@ -293,11 +305,7 @@ def main() -> int:
                         candidate_count = 1
                     if candidate_count >= args.confirm and not baseline_set:
                         baseline_set = True
-    if args.dump is not None:
-        args.dump.mkdir(parents=True, exist_ok=True)
-        print(f"[screen] dumping crops to {args.dump}", flush=True)
-
-    previous = 0
+                        previous = 0
                         if args.mirror_initial:
                             print(f"[screen] baseline {value:+d} (sending initial position)", flush=True)
                         else:
