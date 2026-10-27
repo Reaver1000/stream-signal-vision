@@ -39,8 +39,51 @@ def load_model() -> DigitNet:
     return model
 
 
+def _group_blobs(blobs: list[tuple[int, int, int, int]], gap: int) -> list[list[tuple[int, int, int, int]]]:
+    """Split blobs into separate numbers, e.g. "2 @ 29163.50" -> [2] [29163] [50]."""
+    if not blobs:
+        return []
+    blobs = sorted(blobs, key=lambda b: b[0])
+    groups = [[blobs[0]]]
+    for blob in blobs[1:]:
+        previous = groups[-1][-1]
+        if blob[0] - (previous[0] + previous[2]) <= gap:
+            groups[-1].append(blob)
+        else:
+            groups.append([blob])
+    return groups
+
+
+def _blob_colour(hsv, blobs) -> str | None:
+    """Return 'green', 'red' or None from the ink colour of the digits."""
+    hues: list[int] = []
+    for x, y, w, h in blobs:
+        patch = hsv[y:y + h, x:x + w]
+        if patch.size == 0:
+            continue
+        saturation = patch[:, :, 1].reshape(-1)
+        value = patch[:, :, 2].reshape(-1)
+        hue = patch[:, :, 0].reshape(-1)
+        keep = (saturation > 90) & (value > 90)
+        if keep.any():
+            hues.extend(int(v) for v in hue[keep])
+    if len(hues) < 8:
+        return None
+    mean_hue = sum(hues) / len(hues)
+    if mean_hue < 15 or mean_hue > 165:
+        return "red"
+    if 35 <= mean_hue <= 100:
+        return "green"
+    return None
+
+
 def read_position(frame, roi, model) -> int | None:
-    """Read the signed position integer from the panel region."""
+    """Read the signed position integer from the panel region.
+
+    Direction comes from the digit colour (green = long, red = short) with a
+    minus sign as the fallback. When the panel prints "2 @ 29163.50" only the
+    number before the @ is the contract count.
+    """
     h, w = frame.shape[:2]
     x0 = int(roi[0] * w)
     y0 = int(roi[1] * h)
@@ -71,10 +114,17 @@ def read_position(frame, roi, model) -> int | None:
         return None
     blobs.sort(key=lambda b: b[0])
 
-    max_h = max(b[3] for b in blobs)
-    negative = False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    groups = _group_blobs(blobs, gap=max(10, int(height_px * 0.45)))
+    first = groups[0] if groups else []
+    if not first:
+        return None
+    colour = _blob_colour(hsv, first)
+    negative = colour == "red"
+
+    max_h = max(b[3] for b in first)
     digits: list[int] = []
-    for x, y, bw, bh in blobs:
+    for x, y, bw, bh in first:
         if bh < max_h * 0.5:
             continue
         if bw > bh * 1.6:
@@ -219,8 +269,8 @@ def direct_frames(url: str, fps: float, width: int, height: int):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
-    parser.add_argument("--roi", default="0.795,0.487,0.042,0.067",
-                        help="normalized x,y,w,h of the position number")
+    parser.add_argument("--roi", default="0.795,0.487,0.100,0.067",
+                        help="normalized x,y,w,h covering the POSITION line (first number = contracts)")
     parser.add_argument("--instrument", default="MNQ")
     parser.add_argument("--source-id", default="position-live")
     parser.add_argument("--routes-config", default=None)
