@@ -92,8 +92,13 @@ def read_position(frame, roi, model) -> int | None:
     crop = frame[y0:y1, x0:x1]
     if crop.size == 0:
         return None
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    value_channel = hsv[:, :, 2]
+    saturation_channel = hsv[:, :, 1]
+    # Red/green position ink is often dark in luminance; accept saturated pixels
+    # so short positions are not silently dropped.
+    mask = (((value_channel >= 80) & (saturation_channel >= 80))
+            | (value_channel >= 150)).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
