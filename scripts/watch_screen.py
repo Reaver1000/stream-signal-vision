@@ -75,7 +75,11 @@ def is_covered(crop: np.ndarray) -> bool:
 
 
 def read_with_digits(crop: np.ndarray) -> int | None:
-    """Scan glyphs left to right; stop at the wide '@' that starts the price."""
+    """Read contracts from a tight crop of "<n>@<price>" or "<n>".
+
+    Upscale first so glyphs separate, then take the digits before the '@' (the
+    only glyph that is about as wide as it is tall).
+    """
     from watch_position import load_model
 
     global _MODEL
@@ -84,35 +88,40 @@ def read_with_digits(crop: np.ndarray) -> int | None:
     except NameError:
         _MODEL = load_model()
 
-    height, width = crop.shape[:2]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    big = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    height, width = big.shape[:2]
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
     value = hsv[:, :, 2]
     saturation = hsv[:, :, 1]
-    # Coloured ink (red/green position text) can be dark in luminance, so accept
-    # either bright pixels or saturated ones.
-    mask = (((value >= 80) & (saturation >= 80)) | (value >= 150)).astype(np.uint8) * 255
+    mask = (((value >= 70) & (saturation >= 70)) | (value >= 140)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     blobs = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        if h < max(10, int(height * 0.30)) or w < 3:
+        if h < 20:
             continue
-        if x <= 1 or y <= 1 or x + w >= width - 1 or y + h >= height - 1:
+        if w * h > 0.5 * width * height:
             continue
         blobs.append((x, y, w, h))
     if not blobs:
         return None
     blobs.sort(key=lambda b: b[0])
 
+    at_index = None
+    for index, (x, y, w, h) in enumerate(blobs):
+        if 0.95 <= w / max(1, h) <= 1.35:
+            at_index = index
+            break
+    contract_blobs = blobs[:at_index] if at_index else blobs
+
     negative = False
     digits: list[int] = []
-    for x, y, w, h in blobs:
-        ratio = w / max(1, h)
-        if len(digits) == 0 and ratio > 1.6:
+    for x, y, w, h in contract_blobs:
+        if w / max(1, h) > 1.5:
             negative = True
             continue
-        if ratio > 0.85:
-            break
         glyph = mask[y:y + h, x:x + w]
         side = max(w, h)
         square = np.zeros((side, side), np.uint8)
@@ -128,10 +137,10 @@ def read_with_digits(crop: np.ndarray) -> int | None:
             break
     if not digits:
         return None
-    value = 0
+    result = 0
     for digit in digits:
-        value = value * 10 + digit
-    return -value if negative else value
+        result = result * 10 + digit
+    return -result if negative else result
 
 
 def ink_direction(crop: np.ndarray) -> str | None:
@@ -164,6 +173,10 @@ def main() -> int:
     parser.add_argument("--nt-dry-run", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="print only")
     parser.add_argument("--confirm", type=int, default=2)
+    parser.add_argument("--max-contracts", type=int, default=50,
+                        help="reads above this are ignored as misreads")
+    parser.add_argument("--mirror-initial", action="store_true",
+                        help="also send the position found at startup (default: baseline only)")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--reuse", action="store_true",
                         help="skip the selection screen and reuse config/screen_roi.json")
@@ -225,12 +238,17 @@ def main() -> int:
 
     print(f"[screen] scanning {region} at {args.fps}fps -> NT8 {args.nt_host}:{args.nt_port}"
           f"{' (dry run)' if args.nt_dry_run or args.no_nt else ''}", flush=True)
+    if region["height"] < 20 or region["width"] < 40:
+        print(f"[screen] WARNING: box is only {region['width']}x{region['height']}px. "
+              f"Redraw it around the whole POSITION number (needs ~25px height).", flush=True)
 
     previous = 0
+    baseline_set = False
     candidate = None
     candidate_count = 0
     last_gray = None
     last_change = 0.0
+    rejected = None
     period = 1.0 / max(1.0, args.fps)
 
     with mss.mss() as sct:
@@ -252,13 +270,28 @@ def main() -> int:
                         value = -value
                     elif direction == "long" and value < 0:
                         value = -value
-                    if args.verbose:
+                    if abs(value) > args.max_contracts:
+                        if value != rejected:
+                            print(f"[screen] ignoring implausible read {value:+d} "
+                                  f"(> {args.max_contracts}); redraw the box tighter", flush=True)
+                            rejected = value
+                        value = None
+                    elif args.verbose:
                         print(f"read {value:+d} ({direction or 'sign'})", flush=True)
+                if value is not None:
                     if value == candidate:
                         candidate_count += 1
                     else:
                         candidate = value
                         candidate_count = 1
+                    if candidate_count >= args.confirm and not baseline_set:
+                        baseline_set = True
+                        previous = 0
+                        if args.mirror_initial:
+                            print(f"[screen] baseline {value:+d} (sending initial position)", flush=True)
+                        else:
+                            print(f"[screen] baseline {value:+d} (no order sent)", flush=True)
+                            continue
                     if candidate_count >= args.confirm and value != previous:
                         message = format_change(previous, value, args.instrument)
                         if args.nt_mode == "absolute":
