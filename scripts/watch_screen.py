@@ -157,7 +157,9 @@ def main() -> int:
     parser.add_argument("--instrument", default="MNQ")
     parser.add_argument("--nt-instrument", default="MNQ")
     parser.add_argument("--nt-host", default="127.0.0.1")
-    parser.add_argument("--nt-port", type=int, default=7777)
+    parser.add_argument("--nt-mode", choices=("absolute", "delta"), default="absolute",
+                        help="absolute sends POS|<inst>|<signed qty> (position mirror); delta sends OPEN/CLOSE/FLATTEN")
+    parser.add_argument("--nt-port", type=int, default=7778)
     parser.add_argument("--no-nt", action="store_true")
     parser.add_argument("--nt-dry-run", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="print only")
@@ -210,7 +212,10 @@ def main() -> int:
         print(f"[check] box {region}")
         print(f"[check] read position: {value} (ink {direction or 'none'})")
         if value:
-            print(f"[check] would send on flat->this: {format_commands(0, value, args.nt_instrument)}")
+            if args.nt_mode == "absolute":
+                print(f"[check] would send: POS|{args.nt_instrument}|{value}")
+            else:
+                print(f"[check] would send on flat->this: {format_commands(0, value, args.nt_instrument)}")
         try:
             with socket.create_connection((args.nt_host, args.nt_port), timeout=2):
                 print(f"[check] NT8 relay reachable at {args.nt_host}:{args.nt_port}")
@@ -256,7 +261,10 @@ def main() -> int:
                         candidate_count = 1
                     if candidate_count >= args.confirm and value != previous:
                         message = format_change(previous, value, args.instrument)
-                        commands = format_commands(previous, value, args.nt_instrument)
+                        if args.nt_mode == "absolute":
+                            commands = [f"POS|{args.nt_instrument}|{value}"]
+                        else:
+                            commands = format_commands(previous, value, args.nt_instrument)
                         previous = value
                         if message:
                             print(f"{message}", flush=True)
