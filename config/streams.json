@@ -2,7 +2,8 @@
   "options": {
     "poll_seconds": 60,
     "reader": "vlm",
-    "routes_config": "C:\\Users\\david\\Documents\\Default Project\\stream-signal-vision\\data\\raw\\webhook_routes.json"
+    "routes_config": "C:\\Users\\david\\Documents\\Default Project\\stream-signal-vision\\data\\raw\\webhook_routes.json",
+    "dry_run": true
   },
   "channels": [
     {

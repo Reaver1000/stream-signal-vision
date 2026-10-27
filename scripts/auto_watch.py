@@ -142,6 +142,8 @@ def main() -> int:
     args.poll = args.poll or float(options.get("poll_seconds", 60))
     args.reader = args.reader or options.get("reader", "vlm")
     args.routes_config = args.routes_config or options.get("routes_config")
+    if options.get("dry_run", False):
+        args.dry_run = True
 
     channels = [c for c in config.get("channels", []) if c.get("enabled", True)]
     if not channels:
@@ -158,8 +160,12 @@ def main() -> int:
                 source_id = entry["source_id"]
                 try:
                     videos = probe_channel(entry["streams_url"])
+                    probe_ok = bool(videos)
                 except Exception as exc:
                     log(f"{entry['name']}: probe failed ({type(exc).__name__})")
+                    probe_ok = False
+                    videos = []
+                if not probe_ok:
                     continue
 
                 current = active.get(source_id)
@@ -184,9 +190,18 @@ def main() -> int:
                         current["handle"].close()
                         active.pop(source_id, None)
                         log(f"{entry['name']}: stream ended (watcher exited)")
-                    else:
-                        stop_watcher(current, "channel no longer live")
+                    elif probe_ok and any(v["id"] == current["video"] and v["status"] in ("was_live", "post_live") for v in videos):
+                        stop_watcher(current, "stream finished")
                         active.pop(source_id, None)
+                    elif probe_ok and videos and not live:
+                        # Channel is reachable and no live video is listed; give it
+                        # one extra poll before tearing the watcher down.
+                        current["misses"] = current.get("misses", 0) + 1
+                        if current["misses"] >= 2:
+                            stop_watcher(current, "channel no longer live")
+                            active.pop(source_id, None)
+                    else:
+                        current["misses"] = 0
 
             for source_id, current in list(active.items()):
                 if time.time() - current["started"] > args.max_runtime:

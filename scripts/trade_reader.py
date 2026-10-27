@@ -434,11 +434,38 @@ def read_with_layout(image: np.ndarray, layout: dict, ocr_text: bool = False) ->
 
 TAG_WORD_RE = re.compile(r"(?:imit|lmit|limt|st[o0]p)", re.IGNORECASE)
 TAG_PAIR_RE = re.compile(
-    r"(?:\b(?:buy|sell|se[l1]l)\s+\S*(?:imit|lmit|limt|st[o0]p)\b)"
-    r"|(?:\b\d{1,3}\s*\S*(?:imit|lmit|limt|st[o0]p)\b)"
-    r"|(?:\b\S*(?:imit|lmit|limt|st[o0]p)\s+order\b)",
+    r"(?:(?:buy|sell|se[l1]l)\s*\S*(?:imit|lmit|limt|st[o0]p))"
+    r"|(?:\d{1,3}\s*\S*(?:imit|lmit|limt|st[o0]p))",
     re.IGNORECASE,
 )
+
+
+def _line_masks(hsv: np.ndarray) -> dict:
+    return {color: color_mask(hsv, color) for color in COLOR_RANGES}
+
+
+def has_attached_line(masks: dict, y: int, x0: int, x1: int, min_frac: float = 0.25) -> bool:
+    """True when a coloured line spans much of the plot at this row.
+
+    This is the rule that separates a real order from an axis badge or UI text:
+    only orders draw a line across the chart with a tag attached.
+    """
+    width = max(1, x1 - x0)
+    need = int(width * min_frac)
+    for mask in masks.values():
+        band = mask[max(0, y - 2): y + 3, x0:x1]
+        if band.size == 0:
+            continue
+        columns = (band > 0).any(axis=0).astype(np.uint8)
+        bridged = cv2.dilate(columns.reshape(1, -1), np.ones((1, 15), np.uint8)).ravel()
+        run = 0
+        best = 0
+        for value in bridged:
+            run = run + 1 if value else 0
+            best = max(best, run)
+        if best >= need:
+            return True
+    return False
 
 
 def ocr_chart_text(image: np.ndarray, layout: dict, band_height: int = 380,
@@ -460,6 +487,10 @@ def ocr_chart_text(image: np.ndarray, layout: dict, band_height: int = 380,
         x0, x1 = 0, axis_x0
     scale = layout["scale"]
     items = []
+    hsv_full = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    masks = _line_masks(hsv_full)
+    plot_x0 = axis_x1 if layout["axis_side"] == "left" else 0
+    plot_x1 = w if layout["axis_side"] == "left" else axis_x0
     for band_y in range(y0, y1, max(80, band_height - 60)):
         band_end = min(y1, band_y + band_height)
         crop = image[band_y:band_end, x0:x1]
@@ -475,6 +506,11 @@ def ocr_chart_text(image: np.ndarray, layout: dict, band_height: int = 380,
                 continue
             cy = band_y + (sum(p[1] for p in box) / 4) / upscale
             cx = x0 + (sum(p[0] for p in box) / 4) / upscale
+            candidate = TAG_PAIR_RE.search(text) or ENTRY_RE.search(text)
+            if not candidate:
+                continue
+            if not has_attached_line(masks, int(round(cy)), plot_x0, plot_x1):
+                continue
             items.append({
                 "text": text,
                 "confidence": round(float(conf), 2),
@@ -523,7 +559,7 @@ def assemble_from_ocr(state: TradeState, items: list[dict]) -> None:
     tags = []
     for item in items:
         text = item["text"]
-        if TAG_WORD_RE.search(text):
+        if TAG_PAIR_RE.search(text):
             info = classify_tag_text(text)
             tags.append({**item, **info})
         elif ENTRY_RE.search(text):
