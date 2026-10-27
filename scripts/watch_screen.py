@@ -177,6 +177,8 @@ def main() -> int:
                         help="reads above this are ignored as misreads")
     parser.add_argument("--mirror-initial", action="store_true",
                         help="also send the position found at startup (default: baseline only)")
+    parser.add_argument("--dump", type=Path, default=None,
+                        help="save each changed crop here (raw pixels, for tuning)")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--reuse", action="store_true",
                         help="skip the selection screen and reuse config/screen_roi.json")
@@ -270,6 +272,11 @@ def main() -> int:
                         value = -value
                     elif direction == "long" and value < 0:
                         value = -value
+                    if args.dump is not None:
+                        import datetime
+                        stamp = datetime.datetime.now().strftime("%H%M%S_%f")[:10]
+                        name = args.dump / f"pos_{stamp}_{value:+d}.png"
+                        cv2.imwrite(str(name), crop)
                     if abs(value) > args.max_contracts:
                         if value != rejected:
                             print(f"[screen] ignoring implausible read {value:+d} "
@@ -286,7 +293,11 @@ def main() -> int:
                         candidate_count = 1
                     if candidate_count >= args.confirm and not baseline_set:
                         baseline_set = True
-                        previous = 0
+    if args.dump is not None:
+        args.dump.mkdir(parents=True, exist_ok=True)
+        print(f"[screen] dumping crops to {args.dump}", flush=True)
+
+    previous = 0
                         if args.mirror_initial:
                             print(f"[screen] baseline {value:+d} (sending initial position)", flush=True)
                         else:
