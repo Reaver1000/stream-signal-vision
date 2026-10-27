@@ -165,6 +165,8 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--reuse", action="store_true",
                         help="skip the selection screen and reuse config/screen_roi.json")
+    parser.add_argument("--check", action="store_true",
+                        help="read the box once, report the value and NT8 reachability, then exit")
     args = parser.parse_args()
 
     region = None
@@ -191,6 +193,31 @@ def main() -> int:
     import mss
 
     bridge = NT8Bridge(args.nt_host, args.nt_port)
+
+    if args.check:
+        import socket
+
+        with mss.mss() as sct:
+            shot = sct.grab(region)
+        frame = np.frombuffer(shot.bgra, dtype=np.uint8).reshape((shot.height, shot.width, 4))
+        crop = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        value = read_contracts(crop)
+        direction = ink_direction(crop)
+        if value is not None and direction == "short" and value > 0:
+            value = -value
+        elif value is not None and direction == "long" and value < 0:
+            value = -value
+        print(f"[check] box {region}")
+        print(f"[check] read position: {value} (ink {direction or 'none'})")
+        if value:
+            print(f"[check] would send on flat->this: {format_commands(0, value, args.nt_instrument)}")
+        try:
+            with socket.create_connection((args.nt_host, args.nt_port), timeout=2):
+                print(f"[check] NT8 relay reachable at {args.nt_host}:{args.nt_port}")
+        except Exception as exc:
+            print(f"[check] NT8 relay NOT reachable at {args.nt_host}:{args.nt_port} ({type(exc).__name__})")
+        return 0
+
     print(f"[screen] scanning {region} at {args.fps}fps -> NT8 {args.nt_host}:{args.nt_port}"
           f"{' (dry run)' if args.nt_dry_run or args.no_nt else ''}", flush=True)
 
