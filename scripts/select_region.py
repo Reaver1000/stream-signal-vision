@@ -1,12 +1,10 @@
-"""Drag a box over anything on screen and save it as the position scan area.
+"""Drag a box over anything visible on screen.
 
-Run it, drag a rectangle around the POSITION value (e.g. "5@29539.25"), press
-Enter. Esc cancels. Saves config/screen_roi.json relative to the chosen monitor.
+Used by ``watch_screen.py`` on every launch so the scan area can be moved when a
+streamer changes layout. Returns screen-relative coordinates.
 """
 from __future__ import annotations
 
-import json
-import tkinter as tk
 from pathlib import Path
 
 import mss
@@ -16,21 +14,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT = REPO_ROOT / "config" / "screen_roi.json"
 
 
-def main() -> int:
+def choose_region(monitor_index: int = 1, title: str = "Drag around the POSITION value - Enter to start, Esc to reuse last box"):
+    """Show a screenshot and return the chosen box, or None if cancelled."""
+    import tkinter as tk
+
     with mss.mss() as sct:
-        monitor = sct.monitors[1]
+        monitor = sct.monitors[monitor_index]
         shot = sct.grab(monitor)
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
     root = tk.Tk()
-    root.title("Select the POSITION area - drag, then Enter")
+    root.title(title)
     root.attributes("-topmost", True)
     photo = ImageTk.PhotoImage(image)
     canvas = tk.Canvas(root, width=image.width, height=image.height, highlightthickness=0)
     canvas.pack()
     canvas.create_image(0, 0, anchor=tk.NW, image=photo)
 
-    state = {"x0": 0, "y0": 0, "rect": None}
+    state = {"x0": 0, "y0": 0, "rect": None, "result": None}
 
     def on_press(event):
         state["x0"], state["y0"] = event.x, event.y
@@ -45,18 +46,17 @@ def main() -> int:
             canvas.coords(state["rect"], state["x0"], state["y0"], event.x, event.y)
 
     def on_save(_event=None):
-        x0, y0 = state["x0"], state["y0"]
         coords = canvas.coords(state["rect"]) if state["rect"] else None
         if not coords:
             return
-        x1, y1 = coords[2], coords[3]
+        x0, y0, x1, y1 = coords
         left, top = int(min(x0, x1)), int(min(y0, y1))
         width, height = int(abs(x1 - x0)), int(abs(y1 - y0))
         if width < 20 or height < 12:
-            print("selection too small")
+            print("[select] box too small, drag again")
             return
-        data = {
-            "monitor": 1,
+        state["result"] = {
+            "monitor": monitor_index,
             "left": left + monitor["left"],
             "top": top + monitor["top"],
             "width": width,
@@ -64,9 +64,6 @@ def main() -> int:
             "screen_width": monitor["width"],
             "screen_height": monitor["height"],
         }
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        OUT.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        print(f"saved {OUT}: {data}")
         root.destroy()
 
     canvas.bind("<ButtonPress-1>", on_press)
@@ -74,6 +71,19 @@ def main() -> int:
     root.bind("<Return>", on_save)
     root.bind("<Escape>", lambda _e: root.destroy())
     root.mainloop()
+    return state["result"]
+
+
+def main() -> int:
+    import json
+
+    region = choose_region()
+    if region is None:
+        print("cancelled")
+        return 1
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(region, indent=2) + "\n", encoding="utf-8")
+    print(f"saved {OUT}: {region}")
     return 0
 
 

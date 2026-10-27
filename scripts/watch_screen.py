@@ -24,10 +24,13 @@ import json
 import re
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -160,15 +163,30 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print only")
     parser.add_argument("--confirm", type=int, default=2)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--reuse", action="store_true",
+                        help="skip the selection screen and reuse config/screen_roi.json")
     args = parser.parse_args()
 
-    if not args.roi.is_file():
-        raise SystemExit(f"no scan box yet: run scripts/select_region.py first ({args.roi})")
-    roi = json.loads(args.roi.read_text(encoding="utf-8"))
-    region = {
-        "left": roi["left"], "top": roi["top"],
-        "width": roi["width"], "height": roi["height"],
-    }
+    region = None
+    if not args.reuse:
+        from select_region import choose_region
+
+        print("[screen] drag the box around the POSITION value, then press Enter", flush=True)
+        region = choose_region()
+        if region is not None:
+            args.roi.parent.mkdir(parents=True, exist_ok=True)
+            args.roi.write_text(json.dumps(region, indent=2) + "\n", encoding="utf-8")
+            print(f"[screen] saved box {region}", flush=True)
+
+    if region is None:
+        if not args.roi.is_file():
+            raise SystemExit("no box selected and no saved box to reuse")
+        roi = json.loads(args.roi.read_text(encoding="utf-8"))
+        region = {
+            "left": roi["left"], "top": roi["top"],
+            "width": roi["width"], "height": roi["height"],
+        }
+        print(f"[screen] reusing saved box {region}", flush=True)
 
     import mss
 
